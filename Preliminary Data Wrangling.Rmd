@@ -1,0 +1,105 @@
+---
+title: "Preliminary Data Wrangling"
+author: "James Martinez"
+date: "February 27, 2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(dplyr)
+```
+
+## Introduction
+
+This capstone project will utilize historical NBA statistics from 1937 to 2012 to predict NBA All-Star Team Rosters. Data used can be found [here](https://www.kaggle.com/open-source-sports/mens-professional-basketball).
+
+This report contains only the initial data wrangling on the *basketball_players* data set.
+
+## Loading the players data set
+
+```{r}
+# Store player data
+players <- tbl_df(read.csv("basketball_players.csv"))
+head(players)
+```
+
+The **distinct()** function is used to check for duplicate observations.
+
+```{r}
+# Check for duplicate observations
+identical(distinct(players), players)
+```
+
+
+The data set currently contains data from other leagues (e.g., ABA), as well as data from seasons before the first All-Star Game (pre-1950). We can start by removing these extra observations. Post-season stats, players with no games played, and miscellaneous features are also removed.
+
+```{r}
+players <- players %>% 
+  filter(lgID == "NBA", year >= 1950, GP != 0) %>% 
+  select(-contains("Post"), -c(note, stint, lgID))
+```
+
+Note that *lgID* is removed after filtering.
+
+
+## Feature Engineering
+
+Some extra fatures are added to compare a player's performance to the his team and to the league.
+
+```{r}
+# Add some stats to compare by season
+players <- players %>% 
+  group_by(year) %>% 
+  mutate(
+    lgPoints = points / sum(points),
+    lgAssists = assists / sum(assists),
+    lgRebounds = rebounds / sum(rebounds),
+    lgDRebounds = dRebounds / sum(dRebounds),
+    lgORebounds = oRebounds / sum(oRebounds)) %>% 
+  ungroup()
+
+# Add some stats to compare by team
+players <- players %>% 
+  group_by(year, tmID) %>% 
+  mutate(
+    tmPoints = points / sum(points),
+    tmAssists = assists / sum(assists),
+    tmRebounds = rebounds / sum(rebounds),
+    tmDRebounds = dRebounds / sum(dRebounds),
+    tmORebounds = oRebounds / sum(oRebounds)) %>% 
+  ungroup()
+```
+
+The stats generated in the code above are calculated in separate groupings, and are ungrouped afterwards to add more player-specific features (from [basketball-reference.com](https://www.basketball-reference.com/about/glossary.html#mp)). 
+
+```{r, echo=FALSE}
+players <- players %>% 
+  mutate(
+    ftPct = ftMade / ftAttempted,
+    fgPct = fgMade / fgAttempted,
+    efgPct = (fgMade + 0.5 * threeMade) / fgAttempted,
+    PPG = points / GP,
+    astTovRatio = assists / turnovers,
+    dReboundPct = dRebounds / rebounds,
+    oReboundPct = oRebounds / rebounds,
+    totalGameScore = points + 0.4 * (fgMade + threeMade) - 0.7 * fgAttempted - 0.4 * (ftAttempted - ftMade) + 0.7 * oRebounds + 0.3 * dRebounds + steals + 0.7 * assists + 0.7 * blocks - 0.4 * PF - turnovers,
+    avgGameScore = totalGameScore / GP)
+```
+
+Summary of new features added:
+
+* League/Team points/assists/rebounds
+* Field Goal and Free Throw Percentage (FG%/FT%)
+* Effective Field Goal Percentage (eFG%)
+* Points Per Game (PPG)
+* Assist to Turnover Ratio
+* Total and Average Game Score
+
+```{r}
+glimpse(players)
+```
+
+## Future work to be done
+
+There are many observations with incomplete data. Further cleaning will be performed after exploratory data analysis.
