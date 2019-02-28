@@ -14,7 +14,7 @@ library(dplyr)
 
 This capstone project will utilize historical NBA statistics from 1937 to 2012 to predict NBA All-Star Team Rosters. Data used can be found [here](https://www.kaggle.com/open-source-sports/mens-professional-basketball).
 
-This report contains only the initial data wrangling on the *basketball_players* data set.
+This report contains only the initial data wrangling on the **basketball_players** data set.
 
 ## Loading the players data set
 
@@ -40,12 +40,12 @@ players <- players %>%
   select(-contains("Post"), -c(note, stint, lgID))
 ```
 
-Note that *lgID* is removed after filtering.
+Note that *lgID* is also removed after filtering.
 
 
 ## Feature Engineering
 
-Some extra fatures are added to compare a player's performance to the his team and to the league.
+Some extra fatures are added to compare a player's performance to the his team and to the league. Note that, in order to avoid NaN entries, league and team offensive/defensive rebounds utilize **case_when()** to calculate the proportion of rebounds tallied for non-zero values, or set the value to zero otherwise.
 
 ```{r}
 # Add some stats to compare by season
@@ -55,8 +55,12 @@ players <- players %>%
     lgPoints = points / sum(points),
     lgAssists = assists / sum(assists),
     lgRebounds = rebounds / sum(rebounds),
-    lgDRebounds = dRebounds / sum(dRebounds),
-    lgORebounds = oRebounds / sum(oRebounds)) %>% 
+    lgDRebounds = case_when(
+      dRebounds != 0 ~ dRebounds / sum(dRebounds),
+      TRUE ~ 0),
+    lgORebounds = case_when(
+      oRebounds != 0 ~ oRebounds / sum(oRebounds),
+      TRUE ~ 0)) %>% 
   ungroup()
 
 # Add some stats to compare by team
@@ -66,8 +70,12 @@ players <- players %>%
     tmPoints = points / sum(points),
     tmAssists = assists / sum(assists),
     tmRebounds = rebounds / sum(rebounds),
-    tmDRebounds = dRebounds / sum(dRebounds),
-    tmORebounds = oRebounds / sum(oRebounds)) %>% 
+    tmDRebounds = case_when(
+      dRebounds != 0 ~ dRebounds / sum(dRebounds),
+      TRUE ~ 0),
+    tmORebounds = case_when(
+      oRebounds != 0 ~ oRebounds / sum(oRebounds),
+      TRUE ~ 0)) %>% 
   ungroup()
 ```
 
@@ -80,12 +88,16 @@ players <- players %>%
     fgPct = fgMade / fgAttempted,
     efgPct = (fgMade + 0.5 * threeMade) / fgAttempted,
     PPG = points / GP,
-    astTovRatio = assists / turnovers,
+    astTovRatio = case_when(
+      turnovers != 0 ~ assists / turnovers,
+      TRUE ~ 0),
     dReboundPct = dRebounds / rebounds,
     oReboundPct = oRebounds / rebounds,
     totalGameScore = points + 0.4 * (fgMade + threeMade) - 0.7 * fgAttempted - 0.4 * (ftAttempted - ftMade) + 0.7 * oRebounds + 0.3 * dRebounds + steals + 0.7 * assists + 0.7 * blocks - 0.4 * PF - turnovers,
     avgGameScore = totalGameScore / GP)
 ```
+
+To avoid *Inf* values, **case_when()** is again utilized for the assist-to-turnover ratios.
 
 Summary of new features added:
 
@@ -100,6 +112,7 @@ Summary of new features added:
 glimpse(players)
 ```
 
-## Future work to be done
+
+## Future work to be performed
 
 There are many observations with incomplete data. Further cleaning will be performed after exploratory data analysis.
