@@ -79,9 +79,10 @@ players <- players %>%
   ungroup()
 ```
 
-The stats generated in the code above are calculated in separate groupings, and are ungrouped afterwards to add more player-specific features (from [basketball-reference.com](https://www.basketball-reference.com/about/glossary.html#mp)). 
+The stats generated in the code above are calculated in separate groupings, and are ungrouped afterwards to add more player-specific features (see [basketball-reference.com](https://www.basketball-reference.com/about/glossary.html#mp)). 
 
-```{r, echo=FALSE}
+```{r}
+# More individual player stats
 players <- players %>% 
   mutate(
     ftPct = ftMade / ftAttempted,
@@ -112,7 +113,10 @@ Summary of new features added:
 glimpse(players)
 ```
 
+## Future work to be done
 
-## Future work to be performed
+There are many observations with incomplete data. Further cleaning will be performed after exploratory data analysis, but the existing data set can be saved with the following code:
 
-There are many observations with incomplete data. Further cleaning will be performed after exploratory data analysis.
+``` {r}
+write.csv(players, "players_clean.csv")
+```
