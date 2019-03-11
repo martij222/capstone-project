@@ -1,7 +1,7 @@
 ---
-title: "NBA All-Star Team Capstone"
+title: "All-NBA Team Capstone"
 author: "James Martinez"
-date: "March 01, 2019"
+date: "March 08, 2019"
 output: html_document
 ---
 
@@ -13,33 +13,39 @@ library(ggplot2)
 
 ## Introduction
 
-This capstone project will utilize historical NBA statistics from 1937 to 2012 to predict NBA All-Star Team Rosters. Data used can be found [here](https://www.kaggle.com/open-source-sports/mens-professional-basketball).
+This capstone project will utilize historical NBA statistics from 1937 to 2012 to predict All-NBA Teams. Data used can be found [here](https://www.kaggle.com/open-source-sports/mens-professional-basketball).
 
-This report contains only the initial data wrangling on the **basketball_players** data set.
-
-## Loading the players data set
+## Loading the data sets
 
 ```{r}
-# Store player data as a tbl
+# Store data as a tbl
 players <- tbl_df(read.csv("basketball_players.csv"))
-glimpse(players)
+awards <- tbl_df(read.csv("basketball_awards_players.csv"))
+allstar <- tbl_df(read.csv("basketball_player_allstar.csv"))
+
+# Check the players data
+players
 ```
 
-Data already appears to be tidy. As expected, nearly all of our variables of interest are numeric, and it looks like several variables (e.g. *o/dRebounds*, *threeAttempted/Made*) were not tracked in the early seasons. 
+Player data already appears to be tidy. As expected, nearly all of our variables of interest are numeric, and it looks like several variables (e.g. *oRebounds*, *dRebounds*, *threeAttempted*, *threeMade*) were not tracked in the early seasons. 
 
 
 ## Exploratory Data Analysis and Data Cleaning
 
-First, the `identical()` and `distinct()` functions are used to check for duplicate observations (just in case).
+First, the `setequal()` and `distinct()` functions are used to check for duplicate observations (just in case).
 
 ```{r}
 # Check for duplicate observations
-identical(players, distinct(players))
+setequal(players, distinct(players))
+setequal(awards, distinct(awards))
+setequal(allstar, distinct(allstar))
 ```
 
 ### Trimming Some Data
 
-The data set currently contains data from other leagues (e.g., ABA), as well as data from seasons before the first All-Star Game (pre-1950). We can start by removing these extra observations. Post-season stats, players with no games played, and miscellaneous features are also removed (Note that `lgID` is also removed after filtering).
+#### The *players* Data Set
+
+We'll be working with *players* first. The data set currently contains data from other leagues (e.g., ABA), as well as data from seasons before the first All-Star Game (pre-1950). We can start by removing these extra observations. Post-season stats, players with no games played, and miscellaneous features are also removed (Note that `lgID` is also removed after filtering).
 
 ```{r}
 # Remove extraneous rows and columns 
@@ -61,7 +67,7 @@ players %>%
   summary()
 ```
 
-Unfortunately, it looks like there are still several statistics that were not recorded since the inception of the All-Star game (which plenty of NBA historians would love to remind us of). We're concerned specifically with rebounds and 3-pointers. A bit of research reveals that [the NBA didn't begin recording offensive and defensive rebounds until the 1973-1974 season](https://en.wikipedia.org/wiki/Rebound_(basketball)), and [the 3-pointer wasn't adopted until 1979](https://www.usab.com/youth/news/2011/06/the-history-of-the-3-pointer.aspx). This means that we should only keep data from 1979 and later, but let's confirm that with `which.min()` just in case:
+Unfortunately, it looks like there are still several statistics that were not recorded since the inception of the All-Star game (which plenty of NBA historians would love to remind us of). We're concerned specifically with **rebounds and 3-pointers**. A bit of research reveals that [the NBA didn't begin recording offensive and defensive rebounds until the 1973-1974 season](https://en.wikipedia.org/wiki/Rebound_(basketball)), and [the 3-pointer wasn't adopted until 1979](https://www.usab.com/youth/news/2011/06/the-history-of-the-3-pointer.aspx). This means that we should only keep data from 1979 and later, but let's confirm that with `which.min()` just in case:
 
 ```{r}
 # Group by year and sort by maxima
@@ -81,7 +87,7 @@ check$year[max(keep)]
   
 ```
 
-To prevent bias we need to retain data only for years in which **every statistic is available**, so we can get rid of observations before the 1979-1980 season.
+To prevent bias we need to retain data only for years in which **every statistic is available**, so we should get rid of observations before the 1979-1980 season.
 
 ```{r}
 players <- players %>% 
@@ -90,7 +96,110 @@ players <- players %>%
 players
 ```
 
-Look's like we've shaved our data set down from (23,751 x 42) to (14,577 x 20)!
+Look's like we've shaved the *players* data set down from **23,751 x 42** to **14,577 x 20**!
+
+#### The *awards* Data Sets
+
+Now we can make similar adjustments to the data sets for end-of-season awards and All-Star games, which are much smaller than the *players* data set:
+
+```{r}
+awards
+allstar
+```
+
+Similar to *players*, the *awards* data set has data for non-NBA leagues. It also has awards other than the All-NBA teams, such as **"Most Valuable Player"** and **"Rookie of the Year."** We'll only keep NBA data and relevant awards (Note that `grepl()` is used here, along with an appropriate regular expression).
+
+```{r}
+# Filter for league and year
+awards <- awards %>% 
+  filter(lgID == "NBA", year >= 1979) %>% 
+  select(-c(note, lgID))
+
+# Keep relevant awards
+keep <- grepl("All-NBA\\sFirst|All-NBA\\sSecond|All-D|Valuable|Defensive", awards$award)
+awards <- awards[keep,]
+
+# Check for duplicate entries
+setequal(awards, distinct(awards))
+```
+
+To prevent potential bias, **"All-NBA Third Team"** honors are disregarded, since the Third Team has only been selected from 1988 and on. **"Defensive Player of the Year"** is retained as there are only 3 seasons for which data is missing (Defensive POTY has been awarded since 1982). The `pos` variable is also retained, as each team must consist of two guards, two forwards, and one center. As a final step, we create indicator variables for each award.
+
+```{r}
+# Create indicator variables for each award
+awards <- awards %>% 
+  mutate(
+    allDefFirstTeam = case_when(
+      award == "All-Defensive First Team" ~ 1,
+      TRUE ~ as.numeric(0)),
+    
+    allDefSecondTeam = case_when(
+      award == "All-Defensive Second Team" ~ 1,
+      TRUE ~ as.numeric(0)),
+    
+    allNBAFirstTeam = case_when(
+      award == "All-NBA First Team" ~ 1,
+      TRUE ~ as.numeric(0)),
+    
+    allNBASecondTeam = case_when(
+      award == "All-NBA Second Team" ~ 1,
+      TRUE ~ as.numeric(0)),
+    
+    MVP = case_when(
+      award == "Most Valuable Player" ~ 1,
+      TRUE ~ as.numeric(0)),
+    
+    defPOTY = case_when(
+      award == "Defensive Player of the Year" ~ 1,
+      TRUE ~ as.numeric(0))
+  ) %>% 
+  select(-award)
+
+awards
+```
+
+#### The *allstar* Data Set
+
+We wish to use All-Star data as an additional explanatory variable. To avoid complications with existing player statistics, we can disregard actual game performance and simply create an indicator variable for team  membership.
+
+```{r}
+# Filter for league and year
+allstar <- allstar %>% 
+  filter(league_id == "NBA", season_id >= 1979) %>%
+  select(player_id, season_id) %>%
+  mutate(allstar = 1) %>% 
+  rename("playerID" = "player_id", "year" = "season_id")
+
+# Check for duplicate entries
+setequal(allstar, distinct(allstar))
+```
+
+Oops, looks like there's a duplicate entry. After a prolonged investigation, we find that Marques Johnson was incorrectly coded as *johnsma01* instead of *johnsma02*, causing a discrepancy for the All-Star team in 1979, which had both Marques Johnson *and* Magic Johnson.
+
+```{r echo=FALSE}
+dummy <- tbl_df(read.csv("basketball_player_allstar.csv"))
+dummy %>%
+  filter(first_name == "Marques")
+```
+
+We can correct this quirk and re-run our code.
+
+```{r echo=FALSE}
+allstar <- tbl_df(read.csv("basketball_player_allstar.csv"))
+allstar$player_id[allstar$first_name == "Marques"] <- "johnsma02"
+```
+
+```{r}
+allstar <- allstar %>% 
+  filter(league_id == "NBA", season_id >= 1979) %>%
+  select(player_id, season_id) %>%
+  mutate(allstar = 1) %>% 
+  rename("playerID" = "player_id", "year" = "season_id") # Rename variables to match format of players and awards
+
+setequal(allstar, distinct(allstar))
+```
+Much better! Now we should be fine when we merge our data.
+
 
 ### Exploratory Data Analysis
 
