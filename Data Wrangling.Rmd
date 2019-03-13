@@ -22,7 +22,7 @@ This capstone project will utilize historical NBA statistics from 1937 to 2012 t
 players <- as_tibble(read.csv("basketball_players.csv"))
 awards <- as_tibble(read.csv("basketball_awards_players.csv"))
 allstar <- as_tibble(read.csv("basketball_player_allstar.csv"))
-master <- as_tibble(read.csv("basketball_master.csv")) # Master list containing names and playerID's (among other biographical data)
+master <- as_tibble(read.csv("basketball_master.csv"))
 
 # Check the players data
 players
@@ -169,13 +169,38 @@ awards <- awards %>%
     
     defPOTY = case_when(
       grepl("Defensive\\sPlayer", x = award) ~ as.integer(1),
-      TRUE ~ as.integer(0))
-  ) %>% 
-  select(-award)
+      TRUE ~ as.integer(0)))
 
 awards
 ```
 
+#### The *masters* Data Set
+
+The *masters* data set is the master reference for first and last name data and, more importantly, the associated player ID. It also contains additional biographical data, such as height, weight, and college attended. The only relevant variable for us (other than player ID) is the position played, so we'll omit everything else.
+
+```{r}
+# Select relevant variables, rename, and create indicators
+pos <- master %>% 
+  select(bioID, pos) %>% 
+  rename("playerID" = "bioID") %>% 
+  mutate(
+    center = case_when(
+      grepl("C", pos) ~ as.integer(1),
+      TRUE ~ as.integer(0)),
+    
+    forward = case_when(
+      grepl("F", pos) ~ as.integer(1),
+      TRUE ~ as.integer(0)),
+    
+    guard = case_when(
+      grepl("G", pos) ~ as.integer(1),
+      TRUE ~ as.integer(0))
+  ) %>% 
+  select(-pos)
+
+pos$playerID <- as.character(pos$playerID) # Initialize as a character vector
+pos
+```
 
 #### The *allstar* Data Set
 
@@ -187,7 +212,7 @@ allstar <- allstar %>%
   filter(league_id == "NBA", season_id >= 1979) %>%
   select(player_id, season_id) %>%
   mutate(allstar = as.integer(1)) %>% 
-  rename("playerID" = "player_id", "year" = "season_id") # Rename variables to match format of players and awards
+  rename("playerID" = "player_id", "year" = "season_id") # Rename variables to match format of players
 
 # Check for duplicate entries
 setequal(allstar, distinct(allstar))
@@ -229,15 +254,16 @@ Now that we've cleaned up each data set a bit, we can `left_join()` all of our d
 players %>% 
   left_join(awards, by = c("playerID", "year"))
 
+# Merge player data with position data
+players %>% 
+  left_join(pos, by = c("playerID"))
+
 # Merge player data with allstar data
 players %>% 
   left_join(allstar, by = c("playerID", "year"))
 ```
 
-The *awards* data set seemed to merge correctly, but it looks like the number of rows changed after the *allstar* merge. To investigate this error, we can use the `anti_join()` function to compare the original *allstar* data set to the entries that were actually transferred over. `anti_join()` only returns rows from the primary data frame that are *not* in the secondary, while keeping the columns from the primary.
-
-
-
+The *awards* and *pos* data sets seemed to merge correctly, but it looks like the number of rows changed after the *allstar* merge. To investigate this error, we can use the `anti_join()` function to compare the original *allstar* data set to the entries that were actually transferred over. `anti_join()` only returns rows from the primary data frame that are *not* in the secondary, while keeping the columns from the primary.
 
 ```{r}
 anti_join(allstar, players)
@@ -312,13 +338,14 @@ anti_join(allstar, allstar.join, by = c("playerID", "year"))
 
 The line of code `allstar$player_id[allstar$first_name == "David" & allstar$last_name == "Thompson"] <- "thompda01"` should have corrected David Thompson's 1982 All-Star game appearance. But, after reviewing the original *allstar* data (again), we find that there were *two* entries for the *thomsda01* player ID: one for "David Thompson" and one for "David *Thomspon*". This is an error that won't affect our *players* data. The second observation (for Magic Johnson) is for the [1992 All-Star game](https://en.wikipedia.org/wiki/1992_NBA_All-Star_Game). From Wikipedia, 
 
->The game is most remembered for the return of Los Angeles Lakers legend Magic Johnson, who retired before the 1991–92 NBA season after contracting HIV.
+> The game is most remembered for the return of Los Angeles Lakers legend Magic Johnson, who retired before the 1991-92 NBA season after contracting HIV.
 
-With this, we've taken care of the many discrepancies that arose from the attempted joining of the *allstar* and *player* data. At this point we can be confident that we can safely merge all data sets into a common *players* data set.
+With this, we've taken care of the many discrepancies that arose from the attempted joining of the *allstar* and *player* data. At this point we can be confident that we can safely merge these data sets with *players*.
 
 ```{r}
 # Join all data sets
 players.joined <- players %>% 
+  left_join(pos, by = "playerID") %>% 
   left_join(awards, by = c("playerID", "year")) %>% 
   left_join(allstar, by = c("playerID", "year")) %>% 
   mutate_if(is.numeric, coalesce, 0L) # Return non-All-Star entries as integer zeroes
@@ -329,5 +356,5 @@ players.joined
 Now all that's left is to save the cleaned data set!
 
 ``` {r}
-write.csv(players.joined, "players_clean.csv")
+write.csv(players.joined, "players_clean.csv", row.names = FALSE)
 ```
