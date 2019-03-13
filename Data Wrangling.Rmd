@@ -321,7 +321,7 @@ With this, we've taken care of the many discrepancies that arose from the attemp
 players.joined <- players %>% 
   left_join(awards, by = c("playerID", "year")) %>% 
   left_join(allstar, by = c("playerID", "year")) %>% 
-  mutate_if(is.numeric, coalesce, 0L)
+  mutate_if(is.numeric, coalesce, 0L) # Return non-All-Star entries as integer zeroes
 
 players.joined
 ```
@@ -329,5 +329,5 @@ players.joined
 Now all that's left is to save the cleaned data set!
 
 ``` {r}
-write.csv(players, "players_clean.csv")
+write.csv(players.joined, "players_clean.csv")
 ```
