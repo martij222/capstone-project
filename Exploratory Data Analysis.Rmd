@@ -5,13 +5,34 @@ date: "March 12, 2019"
 output: html_document
 ---
 
-### Exploratory Data Analysis
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+```
+
+## Introduction
+
+This report is a continuation of the All-NBA Team Capstone project, which utilizes [historical NBA statistics from 1937 to 2012](https://www.kaggle.com/open-source-sports/mens-professional-basketball) to predict All-NBA Teams. It will cover the exploratory data analysis and statistical analysis of the cleaned *players.joined* data frame, which was exported as *players_clean.csv*.
+
+The data cleaning report can be found in *Data Wrangling.Rmd* in my [capstone project repository](https://github.com/martij222/capstone-project).
+
+## Importing the Cleaned Data
+
+```{r}
+# Store clean data as "players"
+players <- as_tibble(read.csv("players_clean.csv"))
+players
+```
+
+
+## Exploratory Data Analysis
 
 We can get a feel of each variable by plotting the means of each season. Rebounds, 3-pointers, field goals, and free throws are plotted together as fills to get an idea of the proportions. 
 
 ```{r}
-# Calculate the means of each statistic
+# Calculate the means of each game statistic
 playersmean <- players %>%
+  select(c(playerID, year, minutes, points, oRebounds, dRebounds, rebounds, assists, steals, blocks, turnovers, PF, fgAttempted, fgMade, ftAttempted, ftMade, threeAttempted, threeMade)) %>% 
   group_by(year) %>% 
   summarize_if(is.numeric, mean)
 
@@ -19,33 +40,37 @@ playersmean <- players %>%
 playersmean %>% 
   select(year, contains("rebound")) %>% 
   gather(reboundType, count, -year) %>% 
-  ggplot(aes(x = year, y = count, fill = reboundType)) + 
-    geom_area() +
-    scale_color_hue(labels = c("defensive", "offensive", "total"))
+  ggplot(aes(x = year, y = count, fill = reboundType)) +
+    geom_ribbon(aes(ymin = 0, ymax = count), alpha = 0.4) +
+    scale_fill_discrete(name = "Rebounds",
+                        labels = c("Defensive", "Offensive", "Total"))
 
 # Create a plot for 3-pointers
 playersmean %>% 
   select(year, contains("three")) %>% 
   gather(shot, count, -year) %>% 
-  ggplot(aes(x = year, y = count, fill = shot)) + 
-    geom_area() +
-    scale_color_hue(labels = c("attempted", "made"))
+  ggplot(aes(x = year, y = count, fill = shot)) +
+    geom_ribbon(aes(ymin = 0, ymax = count), alpha = 0.4) +
+    scale_fill_discrete(name = "Three\nPointers",
+                        labels = c("Attempted", "Made"))
 
 # Create a plot for field goals
 playersmean %>% 
   select(year, contains("fg")) %>% 
   gather(fieldGoal, count, -year) %>% 
   ggplot(aes(x = year, y = count, fill = fieldGoal)) + 
-    geom_area() +
-    scale_color_hue(labels = c("attempted", "made"))
+    geom_ribbon(aes(ymin = 0, ymax = count), alpha = 0.4) +
+    scale_fill_discrete(name = "Field\nGoals",
+                        labels = c("Attempted", "Made"))
 
 # Create a plot for free throws
 playersmean %>% 
   select(year, contains("ft")) %>% 
   gather(freeThrow, count, -year) %>% 
   ggplot(aes(x = year, y = count, fill = freeThrow)) + 
-    geom_area() +
-    scale_color_hue(labels = c("attempted", "made"))
+    geom_ribbon(aes(ymin = 0, ymax = count), alpha = 0.4) +
+    scale_fill_discrete(name = "Free\nThrows",
+                        labels = c("Attempted", "Made"))
 
 # Create line plots for everything else
 for(i in names(playersmean)){
@@ -64,22 +89,155 @@ Looking at the plots above, we notice a few things:
 2. Despite the 3-point shooting, the points scored per game decreased overall.
 3. Most importantly, **there's a noticeable dive in every statistic in 1998 and 2012**.
 
+We can see why this is by plotting the maximum games played per season:
 
-```{r}
+```{r, echo=FALSE}
 players %>% 
   select(year, GP) %>% 
   group_by(year) %>% 
   summarize_if(is.numeric, max) %>% 
   ggplot(aes(x = year, y = GP, label = GP)) +
     geom_label(size = 3) +
-    labs(title = "Games Played by Season")
+    labs(title = "Maximum Games Played Per Season")
 ```
 
-In the history of the NBA, there have been [four lockouts](https://en.wikipedia.org/wiki/NBA_lockout). On two of these occassions (1995 and 1996), players and owners reached deals before the start of the regular season. However, the two most recent lockouts actually extended into what would have been the regular seasons, forcing shortened seasons of [50 games per team in 1998-1999](https://en.wikipedia.org/wiki/1998%E2%80%9399_NBA_lockout) and [66 games per team in 2011-2012](https://en.wikipedia.org/wiki/2011_NBA_lockout). Furthermore, the 1998-1999 lockout resulted in the cancellation of the season's All-Star game. 
+In the history of the NBA, there have been a total of [four lockouts](https://en.wikipedia.org/wiki/NBA_lockout). On two of these occassions (1995 and 1996), players and owners were able to reach an agreement before the start of the regular season. However, the two most recent lockouts actually extended into what would have been the beginning of the regular seasons, forcing shortened seasons of [50 games per team in 1998-1999](https://en.wikipedia.org/wiki/1998%E2%80%9399_NBA_lockout) and [66 games per team in 2011-2012](https://en.wikipedia.org/wiki/2011_NBA_lockout). The 1998-1999 lockout even resulted in the cancellation of the season's All-Star game.
+
+To avoid the dives in our plots due to the shortened seasons, we can add some features to the *players* data that consider the tracked stats on a per-game basis.
 
 ## Feature Engineering
 
-Some extra features are added to compare a player's performance to the his team and to the league. Note that, in order to avoid NaN entries, league and team offensive/defensive rebounds utilize `case_when()` to calculate the proportion of rebounds tallied for non-zero values, or set the value to zero otherwise.
+Rather than omit the seasons with fewer games, we can add the per-game stats and re-run the code from above to generate the same plots without the dives.
+
+```{r}
+# Create variables for per-game statistics
+players <- players %>% 
+  mutate(
+    minutesPerGame = minutes / GP,
+    pointsPerGame = points / GP,
+    assistsPerGame = assists / GP,
+    oReboundsPerGame = oRebounds / GP,
+    dReboundsPerGame = dRebounds / GP,
+    reboundsPerGame = rebounds / GP,
+    stealsPerGame = steals / GP,
+    blocksPerGame = blocks / GP,
+    turnoversPerGame = turnovers / GP,
+    fgAttemptedPerGame = fgAttempted / GP,
+    fgMadePerGame = fgMade/ GP,
+    ftAttemptedPerGame = ftAttempted / GP,
+    ftMadePerGame = ftMade / GP,
+    threeAttemptedPerGame = threeAttempted / GP,
+    threeMadePerGame = threeMade / GP)
+```
+
+```{r, echo=FALSE}
+# Calculate the means of each game statistic
+playersmean <- players %>%
+  select(c(playerID, year), contains("PerGame")) %>% 
+  group_by(year) %>% 
+  summarize_if(is.numeric, mean)
+
+# Create a plot for rebounds
+playersmean %>% 
+  select(year, contains("rebound")) %>% 
+  gather(reboundType, count, -year) %>% 
+  ggplot(aes(x = year, y = count, fill = reboundType)) +
+    geom_ribbon(aes(ymin = 0, ymax = count), alpha = 0.4) +
+    scale_fill_discrete(name = "Rebounds",
+                        labels = c("Defensive", "Offensive", "Total"))
+
+# Create a plot for 3-pointers
+playersmean %>% 
+  select(year, contains("three")) %>% 
+  gather(shot, count, -year) %>% 
+  ggplot(aes(x = year, y = count, fill = shot)) +
+    geom_ribbon(aes(ymin = 0, ymax = count), alpha = 0.4) +
+    scale_fill_discrete(name = "Three\nPointers",
+                        labels = c("Attempted", "Made"))
+
+# Create a plot for field goals
+playersmean %>% 
+  select(year, contains("fg")) %>% 
+  gather(fieldGoal, count, -year) %>% 
+  ggplot(aes(x = year, y = count, fill = fieldGoal)) + 
+    geom_ribbon(aes(ymin = 0, ymax = count), alpha = 0.4) +
+    scale_fill_discrete(name = "Field\nGoals",
+                        labels = c("Attempted", "Made"))
+
+# Create a plot for free throws
+playersmean %>% 
+  select(year, contains("ft")) %>% 
+  gather(freeThrow, count, -year) %>% 
+  ggplot(aes(x = year, y = count, fill = freeThrow)) + 
+    geom_ribbon(aes(ymin = 0, ymax = count), alpha = 0.4) +
+    scale_fill_discrete(name = "Free\nThrows",
+                        labels = c("Attempted", "Made"))
+
+# Create line plots for everything else
+for(i in names(playersmean)){
+  if (!grepl("year|rebound|three|fg|ft", tolower(i))){
+    plt <- playersmean %>% 
+      ggplot(aes_string(x = "year", y = i)) + geom_line()
+    print(plt)
+  }
+}
+```
+
+Now we can see things a bit more clearly. It looks like the average game seemed to run at a slower pace in general, as most tracked stats saw downward trends - particularly points and turnovers per game. If we assume that most teams prioritized running plays in half court, rather than focusing on transition plays, it sheds some light on the increasing significance of the 3-point shot. Of course, since these are league averages, we could also interpret the overall decrease in tracked statistics as the game becoming much more team-oriented. 
+
+We are also interested in exploring the differences between players who made the All-NBA teams and those who did not. We can plot similar data separated by All-NBA team membership and create histograms to observe the stat distributions directly. Before we can do that, however, we need to create a single column that indicates membership of either team (as opposed to our current indicator variables).
+
+```{r}
+# A separate variable is created just for plotting
+p <- players %>% 
+  mutate(
+    distinction = case_when(
+      grepl("All-NBA", award) ~ "All-NBA Team Member",
+      TRUE ~ "Non-member")
+  ) %>% 
+  select(contains("PerGame"), GP, PF, distinction) # Select certain columns (less plotting)
+
+# Create histograms for each feature
+for (i in names(p)) {
+  if(i != "distinction"){
+    plt <- p %>% 
+      ggplot(aes_string(i)) + 
+        geom_histogram(aes(y = ..density..), color = "blue", fill = "white", alpha = 0.5, bins = 40) +
+        geom_density(alpha = 0.2, fill = "red") +
+        facet_wrap(distinction ~ .)
+      print(plt)
+  }
+}
+```
+
+The code above overlays the density histograms with their kernel density estimates (basically smoothing out the histogram) for All-NBA team members versus non-members. As expected, players who made the All-NBA team generally performed better in every game, in regards to per-game points, assists, rebounds, etc. It also looks like they had more personal fouls and turnovers, but this can be attributed to the fact that they simply had **much more playtime**. 
+
+```{r, echo=FALSE}
+for (i in c("minutesPerGame", "GP")) {
+    plt <- p %>% 
+      ggplot(aes_string(i)) + 
+        geom_histogram(aes(y = ..density..), color = "blue", fill = "white", alpha = 0.5, bins = 40) +
+        geom_density(alpha = 0.2, fill = "red") +
+        facet_wrap(distinction ~ .)
+      print(plt)
+}
+```
+
+We can see that All-NBA team members not only play for most of the game's duration, but they also play for most of the games *in the season*. This is probably a decent indicator of player health during the regular season, which is definitely a contributing factor to making the All-NBA team. We can add a couple features to account for this.
+
+```{r}
+# Create a feature to show games played and health
+players <- players %>% 
+  group_by(year) %>% 
+  mutate(GPRatio = GP / max(GP)) %>% 
+  ungroup() %>% 
+  mutate(healthy = case_when(
+    GPRatio >= 0.7 ~ as.integer(1), # median of GPRatio
+    TRUE ~ as.integer(0)
+  ))
+```
+
+Some extra features are added to compare a player's performance to the his team and to the league. Note that, in order to avoid NaN entries, league and team offensive/defensive rebounds utilize `case_when()` to calculate the proportion of rebounds tallied for non-zero values, or set the value to zero otherwise. This is mostly to account for players who have very few games played.
 
 ```{r}
 # Add some stats to compare by season
@@ -113,7 +271,7 @@ players <- players %>%
   ungroup()
 ```
 
-The stats generated in the code above are calculated in separate groupings, and are ungrouped afterwards to add more player-specific features (see [basketball-reference.com](https://www.basketball-reference.com/about/glossary.html#mp)). 
+The stats generated in the code above are calculated in separate groupings, and are ungrouped afterwards to add more player-specific features (see [basketball-reference.com](https://www.basketball-reference.com/about/glossary.html#mp)).
 
 ```{r}
 # More individual player stats
@@ -122,32 +280,26 @@ players <- players %>%
     ftPct = ftMade / ftAttempted,
     fgPct = fgMade / fgAttempted,
     efgPct = (fgMade + 0.5 * threeMade) / fgAttempted,
-    PPG = points / GP,
-    astTovRatio = case_when(
+    astTovRatio = case_when( 
       turnovers != 0 ~ assists / turnovers,
-      TRUE ~ 0),
+      TRUE ~ 0), 
     dReboundPct = dRebounds / rebounds,
     oReboundPct = oRebounds / rebounds,
     totalGameScore = points + 0.4 * (fgMade + threeMade) - 0.7 * fgAttempted - 0.4 * (ftAttempted - ftMade) + 0.7 * oRebounds + 0.3 * dRebounds + steals + 0.7 * assists + 0.7 * blocks - 0.4 * PF - turnovers,
     avgGameScore = totalGameScore / GP)
 ```
 
-To avoid `Inf` values, `case_when()` is again utilized for the assist-to-turnover ratios.
-
 Summary of new features added:
 
+* Per-game statistics (points, rebounds, assists, etc.)
 * League/Team points/assists/rebounds
 * Field Goal and Free Throw Percentage (FG%/FT%)
 * Effective Field Goal Percentage (eFG%)
-* Points Per Game (PPG)
-* Assist to Turnover Ratio
+* Assist-to-Turnover Ratio
 * Total and Average Game Score
+* Games played ratio
+* Indicator for health
 
 ```{r}
 glimpse(players)
 ```
-
-***
-
-## Future work to be done
-
