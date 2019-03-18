@@ -1,0 +1,153 @@
+---
+title: "Exploratory Data Analysis"
+author: "James Martinez"
+date: "March 12, 2019"
+output: html_document
+---
+
+### Exploratory Data Analysis
+
+We can get a feel of each variable by plotting the means of each season. Rebounds, 3-pointers, field goals, and free throws are plotted together as fills to get an idea of the proportions. 
+
+```{r}
+# Calculate the means of each statistic
+playersmean <- players %>%
+  group_by(year) %>% 
+  summarize_if(is.numeric, mean)
+
+# Create a plot for rebounds
+playersmean %>% 
+  select(year, contains("rebound")) %>% 
+  gather(reboundType, count, -year) %>% 
+  ggplot(aes(x = year, y = count, fill = reboundType)) + 
+    geom_area() +
+    scale_color_hue(labels = c("defensive", "offensive", "total"))
+
+# Create a plot for 3-pointers
+playersmean %>% 
+  select(year, contains("three")) %>% 
+  gather(shot, count, -year) %>% 
+  ggplot(aes(x = year, y = count, fill = shot)) + 
+    geom_area() +
+    scale_color_hue(labels = c("attempted", "made"))
+
+# Create a plot for field goals
+playersmean %>% 
+  select(year, contains("fg")) %>% 
+  gather(fieldGoal, count, -year) %>% 
+  ggplot(aes(x = year, y = count, fill = fieldGoal)) + 
+    geom_area() +
+    scale_color_hue(labels = c("attempted", "made"))
+
+# Create a plot for free throws
+playersmean %>% 
+  select(year, contains("ft")) %>% 
+  gather(freeThrow, count, -year) %>% 
+  ggplot(aes(x = year, y = count, fill = freeThrow)) + 
+    geom_area() +
+    scale_color_hue(labels = c("attempted", "made"))
+
+# Create line plots for everything else
+for(i in names(playersmean)){
+  if (!grepl("year|rebound|three|fg|ft", tolower(i))){
+    plt <- playersmean %>% 
+      ggplot(aes_string(x = "year", y = i)) + geom_line()
+    print(plt)
+  }
+}
+
+```
+
+Looking at the plots above, we notice a few things:
+
+1. 3-point shooting became an increasingly important part of the game over the years.
+2. Despite the 3-point shooting, the points scored per game decreased overall.
+3. Most importantly, **there's a noticeable dive in every statistic in 1998 and 2012**.
+
+
+```{r}
+players %>% 
+  select(year, GP) %>% 
+  group_by(year) %>% 
+  summarize_if(is.numeric, max) %>% 
+  ggplot(aes(x = year, y = GP, label = GP)) +
+    geom_label(size = 3) +
+    labs(title = "Games Played by Season")
+```
+
+In the history of the NBA, there have been [four lockouts](https://en.wikipedia.org/wiki/NBA_lockout). On two of these occassions (1995 and 1996), players and owners reached deals before the start of the regular season. However, the two most recent lockouts actually extended into what would have been the regular seasons, forcing shortened seasons of [50 games per team in 1998-1999](https://en.wikipedia.org/wiki/1998%E2%80%9399_NBA_lockout) and [66 games per team in 2011-2012](https://en.wikipedia.org/wiki/2011_NBA_lockout). Furthermore, the 1998-1999 lockout resulted in the cancellation of the season's All-Star game. 
+
+## Feature Engineering
+
+Some extra features are added to compare a player's performance to the his team and to the league. Note that, in order to avoid NaN entries, league and team offensive/defensive rebounds utilize `case_when()` to calculate the proportion of rebounds tallied for non-zero values, or set the value to zero otherwise.
+
+```{r}
+# Add some stats to compare by season
+players <- players %>% 
+  group_by(year) %>% 
+  mutate(
+    lgPoints = points / sum(points),
+    lgAssists = assists / sum(assists),
+    lgRebounds = rebounds / sum(rebounds),
+    lgDRebounds = case_when(
+      dRebounds != 0 ~ dRebounds / sum(dRebounds),
+      TRUE ~ 0),
+    lgORebounds = case_when(
+      oRebounds != 0 ~ oRebounds / sum(oRebounds),
+      TRUE ~ 0)) %>% 
+  ungroup()
+
+# Add some stats to compare by team
+players <- players %>% 
+  group_by(year, tmID) %>% 
+  mutate(
+    tmPoints = points / sum(points),
+    tmAssists = assists / sum(assists),
+    tmRebounds = rebounds / sum(rebounds),
+    tmDRebounds = case_when(
+      dRebounds != 0 ~ dRebounds / sum(dRebounds),
+      TRUE ~ 0),
+    tmORebounds = case_when(
+      oRebounds != 0 ~ oRebounds / sum(oRebounds),
+      TRUE ~ 0)) %>% 
+  ungroup()
+```
+
+The stats generated in the code above are calculated in separate groupings, and are ungrouped afterwards to add more player-specific features (see [basketball-reference.com](https://www.basketball-reference.com/about/glossary.html#mp)). 
+
+```{r}
+# More individual player stats
+players <- players %>% 
+  mutate(
+    ftPct = ftMade / ftAttempted,
+    fgPct = fgMade / fgAttempted,
+    efgPct = (fgMade + 0.5 * threeMade) / fgAttempted,
+    PPG = points / GP,
+    astTovRatio = case_when(
+      turnovers != 0 ~ assists / turnovers,
+      TRUE ~ 0),
+    dReboundPct = dRebounds / rebounds,
+    oReboundPct = oRebounds / rebounds,
+    totalGameScore = points + 0.4 * (fgMade + threeMade) - 0.7 * fgAttempted - 0.4 * (ftAttempted - ftMade) + 0.7 * oRebounds + 0.3 * dRebounds + steals + 0.7 * assists + 0.7 * blocks - 0.4 * PF - turnovers,
+    avgGameScore = totalGameScore / GP)
+```
+
+To avoid `Inf` values, `case_when()` is again utilized for the assist-to-turnover ratios.
+
+Summary of new features added:
+
+* League/Team points/assists/rebounds
+* Field Goal and Free Throw Percentage (FG%/FT%)
+* Effective Field Goal Percentage (eFG%)
+* Points Per Game (PPG)
+* Assist to Turnover Ratio
+* Total and Average Game Score
+
+```{r}
+glimpse(players)
+```
+
+***
+
+## Future work to be done
+
