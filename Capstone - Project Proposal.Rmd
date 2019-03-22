@@ -1,0 +1,35 @@
+---
+title: "Capstone Project Proposal"
+author: "James Martinez"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Project Idea: All-NBA Team predictions
+
+### What is the problem you want to solve?
+
+My capstone project idea will use regular-season player stats from past NBA seasons to build a machine learning model to predict All-NBA team membership, which is an honor awarded every season in the NBA to the best players in the league.
+
+### Who is your client and why do they care?
+
+My client(s) would be sportsbetters and anyone with a general interest in basketball and/or the NBA.
+
+### What data will your use?
+
+Data used will be from the "Men's Professional Basketball" data set from [Kaggle](https://www.kaggle.com/open-source-sports/mens-professional-basketball).
+
+## Brief Outline
+
+* Download and clean data
+* Explore data
+* Build and test model
+
+## Deliverables
+
+1. Report
+2. Presentation
+3. Code
