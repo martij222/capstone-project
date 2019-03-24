@@ -127,8 +127,7 @@ The means and medians of each shot percentage are shown below:
 A potential explanation for this could be that All-NBA Team members are better at setting up those shots for their team mates. This idea is supported by the fact that they have many more assists, in general.
 
 ## Summary
-Based on these findings, what approach are you going to take? How has your approach changed from your inital proposition, if applicable?
-Although the data set came from Kaggle, there were several issues that came up when preparing the data for analysis.
+Although the data set came from Kaggle, there were several issues that came up when preparing the data for analysis, primarily inconsistency in naming across tables and more importantly, incorrect and inconsistent player ID coding for several observations (particularly in the All-Star data).
 
 Exploratory data analysis also showed some issues with the data, particularly with the number of games played per season. This issue was remedied by creating per-game stats, which were then plotted to visualize the distributions of All-NBA Team members versus non-members.
 
