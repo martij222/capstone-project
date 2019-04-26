@@ -1,0 +1,695 @@
+---
+title: "Machine Learning"
+author: "James Martinez"
+date: "April 17, 2019"
+output:
+  html_document:
+    df_print: paged
+---
+***
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, error = TRUE)
+pkgs <- list("glmnet", "doParallel", "foreach", "tidyverse", "kableExtra")
+lapply(pkgs, require, character.only = T)
+registerDoParallel(cores = 8)
+```
+
+## Introduction
+***
+This report is a continuation of the All-NBA Team Capstone project, which utilizes [historical NBA statistics from 1937 to 2012](https://www.kaggle.com/open-source-sports/mens-professional-basketball) to predict All-NBA Teams. It will cover the logistic regression modeling of the cleaned *players* data using base R and the `glmnet` package.
+
+See RPubs for the [data cleaning](http://rpubs.com/martij222/all-nba-data-wrangling) and [exploratory data analysis](http://rpubs.com/martij222/all-nba-eda) reports, or check my [capstone project repository](https://github.com/martij222/capstone-project). Also, 
+see [this report](http://rpubs.com/martij222/web-scraping) for web scraping the 2018-2019 stats.
+
+## Importing the Data
+***
+```{r}
+# Store clean data as "players"
+players <- as_tibble(read.csv("players_EDA.csv"))
+players <- players %>%
+  select(-c(allDefFirstTeam, allDefSecondTeam, MVP, defPOTY))
+players
+```
+Note: NBA awards are removed as they are typically announced after the All-NBA teams.
+
+## Splitting the Data
+***
+Data is typically split in an 80/20 ratio for the train and test sets, respectively. With that in mind, we'll first build our model reserving the last 6 seasons as our test set.
+
+```{r train/test split}
+# Only include variables we're actually regressing on
+train.data <- players %>% 
+  filter(year < 2006) %>%
+  select(-c(playerID, year, tmID, allNBAFirstTeam, allNBASecondTeam, allNBAThirdTeam, center, forward, guard))
+
+test.data <- players %>% 
+  filter(year >= 2006) %>%
+  select(-c(playerID, year, tmID, allNBAFirstTeam, allNBASecondTeam, allNBAThirdTeam, center, forward, guard))
+```
+
+## Building the Models
+***
+
+### Regularization
+
+**Regularization** is a technique used to prevent model overfitting by imposing a penalty on model coefficients. There are 3 commonly used penalized regression models that we'll use:
+
+1. *LASSO*: only the most significant features are kept (**automatic feature selection**)
+2. *Ridge*: all features are kept, but less contributive ones are set really low (**feature shrinkage**)
+3. *Elastic-Net*: a combination of the above
+
+We can implement these using the `glmnet` package which, per the [Glmnet Vignette](http://web.stanford.edu/~hastie/glmnet/glmnet_alpha.html), solves the following problem:
+
+$\min\limits_{\beta_0, \beta} \frac{1}{N} \sum\limits^N_{i = 1} w_i l (y_i, \beta_0 + \beta^T x_i) + \lambda[(1 - \alpha) ||\beta||^2_2 /2 + \alpha ||\beta||_1]$
+
+The "strength" of the penalty for all 3 models is dependent on $\lambda$, which is one of 2 tunable parameters in regularized regression. The other parameter is $\alpha$, which determines the ratio of the two penalty types. Also, notice that ridge and lasso are technically **special cases** of elastic-net ($\alpha = 0$ and $\alpha = 1$, respectively). 
+
+### Threshold Value
+
+With a logistic regression model, we would normally pick *threshold value* for the logit (i.e. probability) that determines membership of the positive (`allNBA = 1`) or negative class (`allNBA = 0`). For instance, if the threshold value is 0.50, our model would label `allNBA = 1` for probabilities greater than 0.50. 
+
+In practice, the selection of a threshold value is a **business decision** that depends upon the willingness to accept false positives (or false negatives). In our case, there is obviously no consequence for setting our threshold higher or lower. More importantly, however, there are a couple constraints we have to consider regarding the selection of the All-NBA team that we didn't build into our model:
+
+1. Each All-NBA team roster must have 2 forwards, 2 guards, and 1 center.
+2. Players who play "hybrid" positions (e.g. C-F, F-G) can be awarded honors in one position or another, depending on how votes shape up.
+
+So, rather than set a threshold value, we'll simply group by player position and sort by descending probability and determine based on rank. In the ideal case of correctly identifying all 15 unique members: **the top 6 players in the guard and forward lists** and **the top 3 players in the center list** make up all 3 rosters. Of course, because of how player positions are encoded in the data, there may be some overlap that we'll have to look out for.
+
+### Model Evaluation
+
+All things considered, we'll simply want our model to have the best sorting ability (as opposed to evaluating model performance by accuracy, specificity, recall, etc). To characterize this in a way that is insensitive to unbalanced classes (as in our case), we used **Area under the ROC curve (AUC)** as the criterion for cross-validation. The **receiver operating characteristic (ROC)** curve is a plot of *true positive rate* (TPR) against *false positive rate* at various threshold values, so the AUC describes the probability that, given a random player, our model can distinguish between an All-NBA team member and non-member.
+
+Using AUC as our performance metric is easily done by adding the argument `type.measure = "auc"` to the `cv.glmnet` call.
+
+### Lasso {.tabset}
+
+$L_1$, or Lasso (Least Absolute Shrinkage and Selection Operator), regularization relies on the $L_1$ norm (absolute size) to impose penalties on coefficients $\beta_i$.
+
+Practically speaking, this type of penalty results in less-significant variables being "turned off" (i.e. $\beta_i = 0$).
+
+The degree of the penalty is dependent upon tuning parameter $\lambda$, whose optimal value we can determine using cross-validation on our training set.
+
+To perform a lasso regression in `glmnet`, we simply set the argument `alpha = 1` (see formula above).
+
+```{r lasso, cache=TRUE}
+# Create inputs for glmnet
+x <- train.data %>% select(-allNBA) %>% as.matrix # glmnet requires a coefficient matrix
+y <- train.data$allNBA
+
+# Find optimal lambda via cross-validation
+set.seed(42)
+cv.lasso <- cv.glmnet(x, y, alpha = 1, family = "binomial", type.measure = "auc") # Perform cross-validation based on AUC
+
+# Make predictions on test data
+x.test <- test.data %>% select(-allNBA) %>% as.matrix
+p <- cv.lasso %>% predict(newx = x.test, s = "lambda.min", type = "response") %>% as.numeric # store probabilities
+```
+
+```{r, echo=FALSE}
+# Create a test df
+results.lasso <- players %>% 
+  filter(year >= 2006) %>% 
+  mutate(probability = p) %>% 
+  select(playerID, year, allNBAFirstTeam, allNBASecondTeam, allNBAThirdTeam, allNBA, probability, center, forward, guard)
+
+# Predictions for 2006-2007
+lasso.guard.predictions.2006 <- results.lasso %>% 
+  filter(year == 2006, guard == 1) %>%
+  select(-c(center, forward, guard)) %>% 
+  arrange(desc(probability)) %>% 
+  head(10)
+
+lasso.forward.predictions.2006 <- results.lasso %>% 
+  filter(year == 2006, forward == 1) %>%
+  select(-c(center, forward, guard)) %>% 
+  arrange(desc(probability)) %>% 
+  head(10)
+
+lasso.center.predictions.2006 <- results.lasso %>% 
+  filter(year == 2006, center == 1) %>%
+  select(-c(center, forward, guard)) %>% 
+  arrange(desc(probability)) %>% 
+  head(10)
+```
+
+#### 2006 Guard Predictions
+
+```{r}
+lasso.guard.predictions.2006
+```
+
+#### 2006 Forward Predictions
+
+```{r}
+lasso.forward.predictions.2006
+```
+
+#### 2006 Center Predictions
+
+```{r}
+lasso.center.predictions.2006
+```
+
+#### AUC
+
+```{r}
+# Max AUC
+max(cv.lasso$cvm)
+```
+
+#### Regression Coefficients
+
+```{r, echo=FALSE}
+# Regression coefficients using lambda.min 
+l.coef <- coef(cv.lasso, s = "lambda.min")
+l.coef[order(l.coef[,1], decreasing = TRUE),]
+```
+
+###
+
+Here are the predictions for the 2011-2012 season:
+
+### {.tabset}
+```{r, echo=FALSE}
+# Predictions for 2011-2012
+lasso.guard.predictions.2011 <- results.lasso %>% 
+  filter(year == 2011, guard == 1) %>%
+  select(-c(center, forward, guard)) %>% 
+  arrange(desc(probability)) %>% 
+  head(15)
+
+lasso.forward.predictions.2011 <- results.lasso %>% 
+  filter(year == 2011, forward == 1) %>%
+  select(-c(center, forward, guard)) %>% 
+  arrange(desc(probability)) %>% 
+  head(15)
+
+lasso.center.predictions.2011 <- results.lasso %>% 
+  filter(year == 2011, center == 1) %>%
+  select(-c(center, forward, guard)) %>% 
+  arrange(desc(probability)) %>% 
+  head(15)
+```
+
+#### 2011 Guard Predictions
+
+```{r}
+lasso.guard.predictions.2011
+```
+
+#### 2011 Forward Predictions
+
+```{r}
+lasso.forward.predictions.2011
+```
+
+#### 2011 Center Predictions
+
+```{r}
+lasso.center.predictions.2011
+```
+
+###
+
+From the looks of it, our model is doing a pretty decent job! The correct players are within the top 15 most probable players per position, according to this model. But, let's see if we can make an adjustment in our train/test split to try and improve our model.
+
+### Maximizing training data {.tabset}
+
+Since we'd presumably use this model to predict All-NBA teams every year, we should try using **only the last season (2011-2012)** as our test set. Hopefully, maximizing our training data will improve the model.
+
+```{r, cache=TRUE}
+# Overwrite train/test sets
+train.data <- players %>% 
+  filter(year != 2011) %>%
+  select(-c(playerID, year, tmID, allNBAFirstTeam, allNBASecondTeam, allNBAThirdTeam, center, forward, guard))
+
+test.data <- players %>% 
+  filter(year == 2011) %>%
+  select(-c(playerID, year, tmID, allNBAFirstTeam, allNBASecondTeam, allNBAThirdTeam, center, forward, guard))
+
+# glmnet inputs
+x <- train.data %>% select(-allNBA) %>% as.matrix 
+y <- train.data$allNBA
+
+# Find optimal lambda via cross-validation
+set.seed(42)
+cv.lasso <- cv.glmnet(x, y, alpha = 1, family = "binomial", type.measure = "auc") # Perform cross-validation based on AUC
+
+# Make predictions on test data
+x.test <- test.data %>% select(-allNBA) %>% as.matrix
+p <- cv.lasso %>% predict(newx = x.test, s = "lambda.min", type = "response") %>% as.numeric
+```
+
+```{r, echo=FALSE}
+# Combine results column with original data
+results.lasso <- players %>% 
+  filter(year == 2011) %>% 
+  mutate(probability = p) %>% 
+  select(playerID, allNBAFirstTeam, allNBASecondTeam, allNBAThirdTeam, allNBA, probability, center, forward, guard)
+
+# Predictions for 2011
+lasso.guard.predictions.2011 <- results.lasso %>% 
+  filter(guard == 1) %>%
+  select(-c(center, forward, guard)) %>% 
+  arrange(desc(probability)) %>% 
+  head(15)
+
+lasso.forward.predictions.2011 <- results.lasso %>% 
+  filter(forward == 1) %>%
+  select(-c(center, forward, guard)) %>% 
+  arrange(desc(probability)) %>% 
+  head(15)
+
+lasso.center.predictions.2011 <- results.lasso %>% 
+  filter(center == 1) %>%
+  select(-c(center, forward, guard)) %>% 
+  arrange(desc(probability)) %>% 
+  head(15)
+```
+
+#### Guards
+
+```{r}
+lasso.guard.predictions.2011
+```
+
+#### Forwards
+
+```{r}
+lasso.forward.predictions.2011
+```
+
+#### Centers
+
+```{r}
+lasso.center.predictions.2011
+```
+
+#### AUC
+
+```{r}
+# Display AUC using lambda.min
+max(cv.lasso$cvm)
+```
+
+#### Positive Coefficients
+```{r, echo=FALSE}
+# Regression coefficients using lambda.min 
+l.coef <- coef(cv.lasso, s = "lambda.min")
+l.coef <- l.coef[order(l.coef[,1], decreasing = TRUE),]
+l.coef[l.coef > 0]
+```
+
+#### Zero Coefficients
+```{r, echo=FALSE}
+# Regression coefficients using lambda.min 
+l.coef[l.coef == 0]
+```
+
+#### Negative Coefficients
+
+```{r, echo=FALSE}
+# Regression coefficients using lambda.min 
+l.coef[l.coef < 0]
+```
+
+###
+
+While the predicted line-ups didn't change, the top contenders for each position have higher probabilities relative to the other model. It looks like taking advantage of as many seasons as possible gave this model a slight edge over the previous one, so we'll use this method when building the others.
+
+Overall, it looks like our lasso model did a fairly good job predicting All-NBA membership in general. Except for Rajon Rondo (who was apparently incorrectly coded as a forward in 2011) and Carmelo Anthony, the correct players are placed in the top 10 for each position.
+
+#### Interpreting the Regression Coefficients
+
+The **logit** mentioned at the beginning of the report represents the **log odds**, not probabilities. This means that, for any given variable and holding other variables constant, the actual ratio of probabilities is $e^{\beta}$. For example, the regression coefficient for All-Star team membership is $\beta = 2.221494$. Then, fixing every other variable at a fixed value, the odds of making an All-NBA team roster for an All-Star (`allstar = 1`) compared to the odds of making the roster for a non-All-Star (`allstar = 0`) is $e^{2.221494} = 9.221097$. In other words, the odds are 9.22 times greater for All-Stars to make an All-NBA roster (if everything else is equal).
+
+#### Lasso Discussion
+
+It's interesting to see that the lasso model "turned off" many of the offensive variables like points, assists, and field goals, and even more interesting that it *penalizes* others like field goal attempts. Some of these penalties make sense, for instance, personal fouls and turnovers per game. For others, like blocks, the penalties are probably a result of the algorithm adjusting for bias due to other features **over-representing the raw statistic**. This can be seen by comparing the `block` coefficient to the `blocksPerGame` coefficient. It looks like our features `GPRatio` and `healthy`, which were inspired by our exploratory data analysis, turned out to be good indicators of All-NBA team membership. Sweet.
+
+A cursory glance at the results, as well as the AUC of $0.9930087$ suggest that this is a pretty good model.
+
+### Ridge {.tabset}
+
+Similar to lasso regression, $L_2$, or ridge, regression penalizes large coefficients. However, it instead relies on the $L_2$ penalty (squared). 
+
+Practically speaking, this leads to coefficient *shrinkage* (it doesn't force them to 0).
+
+Again, the "strength" of the penalty is tuned by the parameter $\lambda$.
+
+Using `glmnet`, ridge regression can be done by setting `alpha = 0`.
+
+```{r ridge, cache=TRUE}
+# Find optimal lambda via cross-validation
+set.seed(42)
+cv.ridge <- cv.glmnet(x, y, alpha = 0, family = "binomial", type.measure = "auc") # No need to re-initialize x and y
+
+# Make predictions on test data
+p <- cv.ridge %>% predict(newx = x.test, s = "lambda.min", type = "response") %>% as.numeric # store probabilities
+```
+
+```{r, echo=FALSE}
+# Combine results column with original data
+results.ridge <- players %>% 
+  filter(year == 2011) %>% 
+  mutate(probability = p) %>% 
+  select(playerID, allNBAFirstTeam, allNBASecondTeam, allNBAThirdTeam, allNBA, probability, center, forward, guard)
+
+# Ridge predictions for 2011
+ridge.guard.predictions.2011 <- results.ridge %>% 
+  filter(guard == 1) %>%
+  select(-c(center, forward, guard)) %>% 
+  arrange(desc(probability)) %>% 
+  head(15)
+
+ridge.forward.predictions.2011 <- results.ridge %>% 
+  filter(forward == 1) %>%
+  select(-c(center, forward, guard)) %>% 
+  arrange(desc(probability)) %>% 
+  head(15)
+
+ridge.center.predictions.2011 <- results.ridge %>% 
+  filter(center == 1) %>%
+  select(-c(center, forward, guard)) %>% 
+  arrange(desc(probability)) %>% 
+  head(15)
+```
+
+#### Guard Predictions
+
+```{r}
+ridge.guard.predictions.2011
+```
+
+#### Forward Predictions
+
+```{r}
+ridge.forward.predictions.2011
+```
+
+#### Center Predictions
+
+```{r}
+ridge.center.predictions.2011
+```
+
+#### AUC
+
+```{r}
+# Display AUC for lambda.min
+max(cv.ridge$cvm)
+```
+
+#### Positive Coefficients
+
+```{r, echo=FALSE}
+# Regression coefficients using lambda.min 
+r.coef <- coef(cv.ridge, s = "lambda.min")
+r.coef <- r.coef[order(r.coef[,1], decreasing = TRUE),]
+r.coef[r.coef > 0]
+```
+
+#### Negative Coefficients
+
+```{r, echo=FALSE}
+# Regression coefficients using lambda.min 
+r.coef[r.coef < 0]
+```
+
+
+###
+
+#### Ridge Discussion
+
+Like the Lasso model, the Ridge model correctly identified the First Team, as well as a good chunk of the Second Team. Deron Williams again ranked pretty high despite not making a roster at all; John wall also scooted another guard off the top 6. Rajon Rondo was only given a probability of 0.038, which would *just* place him in the top 10 for guards. It had Carmelo Anthony in 7th place for forwards, but it also gave poor Tyson Chandler a measly 0.015 probability of making the roster.
+
+Note that, as mentioned at the top of the section, all of the variables contribute, though some coefficients are quite small and thus bear little effect. the `GPRatio` and `healthy` variables are much less significant compared to the Lasso model, but many of the offensive stats are much more important to the Ridge model.
+
+Though the Ridge model pulled off an AUC of $0.9915167$, it looks like the predictions don't quite match up as well as the Lasso model. 
+
+### Elastic-net {.tabset}
+
+Elastic-net is a compromise between lasso and ridge regression. the ratio of $L_1$ and $L_2$ penalties is determined by `alpha`.
+
+To find the optimal alpha, we'll have to perform several iterations of cross-validation and store the alpha that corresponds to the maximum AUC. To speed up computation, we can use `%dopar%` from the `foreach` package to run in parallel (in conjunction with the `doParallel` package).
+
+```{r elastic net, warning=FALSE, cache=TRUE}
+# Set alphas to try
+a <- seq(0.05, 0.95, 0.05)
+
+# Loop with foreach
+loop <- foreach(i = a, .combine = rbind, .packages = "glmnet") %dopar% {
+  set.seed(42)
+  cv <- cv.glmnet(x, y, family = "binomial", type.measure = "auc", parallel = TRUE, alpha = i)
+  data.frame(cvm = cv$cvm[cv$lambda == cv$lambda.min], s = "lambda.min", alpha = i)
+}
+
+# Optimal alpha
+alpha <- loop[loop$cvm == max(loop$cvm),]$alpha
+alpha
+
+# Remake the optimal fitted cv.glmnet object
+cv.elastic <- cv.glmnet(x, y, alpha = alpha, family = "binomial", type.measure = "auc")
+
+# Make predictions with the elastic net model
+set.seed(42)
+p <- cv.elastic %>% predict(newx = x.test, s = "lambda.min", type = "response") %>% as.numeric
+```
+
+```{r, echo=FALSE}
+# Combine results column with original data
+results.elastic <- players %>% 
+  filter(year == 2011) %>% 
+  mutate(probability = p) %>% 
+  select(playerID, allNBAFirstTeam, allNBASecondTeam, allNBAThirdTeam, allNBA, probability, center, forward, guard)
+
+# Predictions for 2011
+elastic.guard.predictions.2011 <- results.elastic %>% 
+  filter(guard == 1) %>%
+  select(-c(center, forward, guard)) %>% 
+  arrange(desc(probability)) %>% 
+  head(15)
+
+elastic.forward.predictions.2011 <- results.elastic %>% 
+  filter(forward == 1) %>%
+  select(-c(center, forward, guard)) %>% 
+  arrange(desc(probability)) %>% 
+  head(15)
+
+elastic.center.predictions.2011 <- results.elastic %>% 
+  filter(center == 1) %>%
+  select(-c(center, forward, guard)) %>% 
+  arrange(desc(probability)) %>% 
+  head(15)
+```
+
+#### Guards
+
+```{r}
+elastic.guard.predictions.2011
+```
+
+#### Forwards
+
+```{r}
+elastic.forward.predictions.2011
+```
+
+#### Centers
+
+```{r}
+elastic.center.predictions.2011
+```
+
+#### AUC
+
+```{r}
+# Maximum AUC
+max(loop$cvm)
+```
+
+#### Positive Coefficients
+
+```{r, echo=FALSE}
+# Regression coefficients
+e.coef <- coef(cv.elastic, s = "lambda.min")
+e.coef <- e.coef[order(e.coef[,1], decreasing = TRUE),]
+e.coef[e.coef > 0]
+```
+
+#### Zero Coefficients
+
+```{r, echo=FALSE}
+# Deactivated regression coefficients
+e.coef[e.coef == 0]
+```
+
+#### Negative Coefficients
+
+```{r, echo=FALSE}
+# Negative regression coefficients
+e.coef[e.coef < 0]
+```
+
+###
+
+We can see that the elastic-net model did a pretty good job predicting all three teams. Like the other two models, the First Team and most of the Second Team are correctly predicted and the true roster are all within the top 15 most probable players. Overall, the model correctly predicts the most players, and has the highest AUC of $0.9931599$.
+
+## Model Comparison
+***
+There are a few things to note:
+
+1. Dirk Nowitzki actually made the team as a *forward*, though he's coded as a center.
+2. Dwight Howard made the team as a *center*, though he's coded as a forward.
+3. Again, Rajon Rondo was incorrectly coded as a forward, so he should be listed as a *guard*.
+
+With these adjustments, the results are as follows:
+
+### 2012 All-NBA First Team
+
+```{r 2012 first team summary, echo=FALSE, message=FALSE, warnings=FALSE, results='asis'}
+fts <- " 
+| Position      | Lasso            | Ridge            | Elastic-Net      | Actual           |
+|---------------|:----------------:|:----------------:|:----------------:|:----------------:|
+| Guard         | Chris Paul       | Chris Paul       | Chris Paul       | Chris Paul       |
+| Guard         | Kobe Bryant      | Kobe Bryant      | Kobe Bryant      | Kobe Bryant      |
+| Forward       | LeBron James     | LeBron James     | LeBron James     | LeBron James     |
+| Forward       | Kevin Durant     | Kevin Durant     | Kevin Durant     | Kevin Durant     |
+| Center        | Dwight Howard    | Dwight Howard    | Dwight Howard    | Dwight Howard    |
+"
+cat(fts)
+```
+
+### 2012 All-NBA Second Team
+
+```{r 2012 second team summary, echo=FALSE, message=FALSE, warnings=FALSE, results='asis'}
+sts <- " 
+| Position      | Lasso            | Ridge            | Elastic-Net      | Actual           |
+|---------------|:----------------:|:----------------:|:----------------:|:----------------:|
+| Guard         |~~Deron Williams~~|~~Deron Williams~~|~~Deron Williams~~| Tony Parker      |
+| Guard         | Russell Westbrook| Russell Westbrook| Russell Westbrook| Russell Westbrook|
+| Forward       | Kevin Love       | Kevin Love       | Kevin Love       | Kevin Love       |
+| Forward       | Blake Griffin    | Blake Griffin    | Blake Griffin    | Blake Griffin    |
+| Center        | Andrew Bynum     | Andrew Bynum     | Andrew Bynum     | Andrew Bynum     |
+"
+cat(sts)
+```
+
+### 2012 All-NBA Third Team
+
+```{r 2012 third team summary, echo=FALSE, message=FALSE, warnings=FALSE, results='asis'}
+tts <- " 
+| Position      | Lasso              | Ridge            | Elastic-Net      | Actual           |
+|---------------|:------------------:|:----------------:|:----------------:|:----------------:|
+| Guard         |~~Brandon Jennings~~| Dwyane Wade      | Dwyane Wade      | Dwyane Wade      |
+| Guard         | *Tony Parker*      |~~John Wall~~     | *Tony Parker*    | Rajon Rondo      |
+| Forward       |~~Pau Gasol~~       |~~Pau Gasol~~     |~~Pau Gasol~~     | Dirk Nowitzki    |
+| Forward       |~~Josh Smith~~      |~~Josh Smith~~    |~~Josh Smith~~    | Carmelo Anthony  |
+| Center        |~~Marcin Gortat~~   |~~Marc Gasol~~    |~~Marcin Gortat~~ | Tyson Chandler   |
+"
+cat(tts) # output the table in a format good for HTML/PDF/docx conversion
+```
+
+### Discussion and Summary
+
+Note that, in the tables above, players that are struck through did not make any roster (i.e. ~~Marcin Gortat~~, ~~Josh Smith~~, etc.). *Tony Parker* is italicized since he was predicted to make Third Team, but actually made Second Team.
+
+All 3 models correctly predicted the First Team roster, as well as 4 of 5 Second Team members. Interestingly, they all agreed that Deron Williams should have been on the Second Team (sorry Deron). The Third Team roster is where it gets hairy - the Lasso and Ridge models only correctly predicted 1 of 5 players, and Elastic-Net only got 2. Also note that, if Deron Williams wasn't ranked 4th on the Guards list, Tony Parker would have correctly made Second Team for the Elastic-Net model. Unfortunately, poor Rondo was only given a 0.066 probability of making a roster, so he still wouldn't have cracked Third Team on this model.
+
+There are a lot of intangible factors that go into the All-NBA team selection, particularly since it's based on voting (not even by players and coaches). However, given that all 3 models correctly predicted 9 of 10 First and Second Team rosters, it seems that there's some semblance of agreement upon whatever criteria the voters judge worthiness. Whatever those criteria are, the First Team apparently seem to have it in spades, given their relative probabilities in each model. Voters seem to agree on the obvious First-Teamers (and Second-Teamers for that), but Third Team is where everyone seems to have an opinion. 
+
+In terms of AUC, the elastic-net model narrowly edged out the lasso model ($0.9931599 > 0.9930087$). More importantly, however, it identified more correct players than the other two models (12/15). Based on this and the AUC, we can say that **elastic-net provides the best model**. 
+
+## 2019 All-NBA Predictions 
+***
+Of course, our model probably (no pun intended) won't be effective skipping 7 seasons of data. Not to mention how the changes to the All-Star team selection, one of the most significant predictors, will affect the model. 
+
+Let's use our elastic-net model to predict the All-NBA teams for the 2018-2019 season anyway!
+
+```{r 2019 predictions}
+# Read in 2018-2019 regular season data and save as matrix
+players.2019 <- read.csv("players_2019.csv")
+
+x.2019 <- players.2019 %>% 
+  select(-c(playerID, tmID, center, forward, guard)) %>% 
+  as.matrix
+
+set.seed(42)
+p <- cv.elastic %>% predict(newx = x.2019, s = "lambda.min", type = "response") %>% as.numeric
+```
+
+```{r, echo=FALSE}
+# Combine results column with original data
+results.elastic.2019 <- players.2019 %>% 
+  mutate(probability = p) %>% 
+  select(playerID, probability, center, forward, guard)
+
+# Predictions for 2019
+elastic.guard.predictions.2019 <- results.elastic.2019 %>% 
+  filter(guard == 1) %>%
+  select(-c(center, forward, guard)) %>% 
+  arrange(desc(probability)) %>% 
+  head(15)
+
+elastic.forward.predictions.2019 <- results.elastic.2019 %>% 
+  filter(forward == 1) %>%
+  select(-c(center, forward, guard)) %>% 
+  arrange(desc(probability)) %>% 
+  head(15)
+
+elastic.center.predictions.2019 <- results.elastic.2019 %>% 
+  filter(center == 1) %>%
+  select(-c(center, forward, guard)) %>% 
+  arrange(desc(probability)) %>% 
+  head(15)
+```
+
+### Probability Rankings {.tabset}
+
+#### Guard Predictions
+
+```{r, echo=FALSE}
+elastic.guard.predictions.2019
+```
+
+#### Forward Predictions
+
+```{r, echo=FALSE}
+elastic.forward.predictions.2019
+```
+
+#### Center Predictions
+
+```{r, echo=FALSE}
+elastic.center.predictions.2019
+```
+
+### 2019 All-NBA Predicted Roster
+
+```{r, echo=FALSE}
+allnba.guard.2019 <- elastic.guard.predictions.2019 %>% .[1:6,1] %>% matrix(nrow = 2, byrow = FALSE)
+allnba.forward.2019 <- elastic.forward.predictions.2019 %>% .[1:6,1] %>% matrix(nrow = 2, byrow = FALSE)
+allnba.center.2019 <- elastic.center.predictions.2019 %>% .[1:3,1] %>% matrix(nrow = 1, byrow = FALSE)
+
+allnba <- data.frame(rbind(allnba.guard.2019, allnba.forward.2019, allnba.center.2019))
+names(allnba) <- c("First Team", "Second Team", "Third Team")
+row.names(allnba) <- c("Guard ", "Guard", "Forward ", "Forward", "Center")
+
+allnba %>% 
+  kable %>% 
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"))
+```
+
+Seems like a pretty good list. We'll find out how good in a few weeks!
+
+## Conclusion
+***
+We created 3 logistic regression models using Lasso, ridge, and elastic-net. The elastic-net model performed the best, in terms of AUC and players correctly predicted (11 of 15). There is a lot of room for improvement, but it's not terrible! It's also worth noting that all 3 models agreed on both the First and Second Teams. 
+
+It's interesting to note that all 3 models have `lgAssists` as the **highest coefficient**, followed either by `lgPoints` or `tmPoints`. Of course, being proportions, league- and team-wide statistics vary from player to player on the order of tenths, hundreths, or even thousandths of a point. On such a scale their importance can be a bit difficult to interpret; this is one of the disadvantages of logistic regression. However, it makes enough sense that the highest scorers and assist-ers have much greater probabilities of making a roster.
+
+All-Star status may be the **best predictor** of All-NBA team membership - the elastic-net and lasso models gave All-Stars about **9 times greater odds** of making a roster (ridge gave about 6 times). Player health (and/or `GPRatio`) is also a significant contributor - all models had one or the other within the top 10 highest coefficients. Another point of interest is the apparent importance of `lgORebounds`, which can, in some opinions, be an indirect indicator of effort/activity.
+
+Though not exactly unexpected, all 3 models penalize turnovers, turnover per game, and personal fouls. What's more interesting is that **all 3 models also penalize some combination of minutes, minutes per game, and games played**. It's not much of a penalty in any model - for instance, the winning elastic-net model docks ~0.4% chance for every game played. Perhaps this has to do with teams resting their key players every once in a while (or before the playoffs).
+
+We used the model to predict the All-NBA team rosters for the current (2018-2019) season. As of April 18, 2019, the teams have not yet been announced.
