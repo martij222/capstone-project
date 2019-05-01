@@ -570,7 +570,8 @@ There are several paths to take in order to improve upon the current model, incl
 1. Scraping the missing regular season statistics (seasons after 2011-2012).
 2. Training on algorithms that can describe non-linear relationships (e.g. CART, random forests, gradient boosted trees).
 3. Performing resampling or weighting to address class imbalance.
-4. Adding Playoff qualification as an indicator variable (this is fine since awards are announced *after* the regular season)
+4. Adding Playoff qualification as an indicator variable (this is fine since awards are announced *after* the regular season).
+5. Applying clustering before creating models.
 
 ## 9. Additional Information
 
