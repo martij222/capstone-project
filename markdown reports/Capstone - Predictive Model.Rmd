@@ -5,11 +5,13 @@ date: "April 17, 2019"
 output:
   html_document:
     df_print: paged
+    fig_width: 9
+    fig_height: 4
 ---
 ***
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE, error = TRUE)
-pkgs <- list("glmnet", "doParallel", "foreach", "tidyverse", "kableExtra")
+pkgs <- list("glmnet", "doParallel", "foreach", "tidyverse", "kableExtra", "PRROC")
 lapply(pkgs, require, character.only = T)
 registerDoParallel(cores = 8)
 ```
@@ -60,7 +62,7 @@ test.data <- players %>%
 
 We can implement these using the `glmnet` package which, per the [Glmnet Vignette](http://web.stanford.edu/~hastie/glmnet/glmnet_alpha.html), solves the following problem:
 
-$\min\limits_{\beta_0, \beta} \frac{1}{N} \sum\limits^N_{i = 1} w_i l (y_i, \beta_0 + \beta^T x_i) + \lambda[(1 - \alpha) ||\beta||^2_2 /2 + \alpha ||\beta||_1]$
+$$\min\limits_{\beta_0, \beta} \frac{1}{N} \sum\limits^N_{i = 1} w_i l (y_i, \beta_0 + \beta^T x_i) + \lambda[(1 - \alpha) ||\beta||^2_2 /2 + \alpha ||\beta||_1]$$
 
 The "strength" of the penalty for all 3 models is dependent on $\lambda$, which is one of 2 tunable parameters in regularized regression. The other parameter is $\alpha$, which determines the ratio of the two penalty types. Also, notice that ridge and lasso are technically **special cases** of elastic-net ($\alpha = 0$ and $\alpha = 1$, respectively). 
 
@@ -75,13 +77,50 @@ In practice, the selection of a threshold value is a **business decision** that 
 
 So, rather than set a threshold value, we'll simply group by player position and sort by descending probability and determine based on rank. In the ideal case of correctly identifying all 15 unique members: **the top 6 players in the guard and forward lists** and **the top 3 players in the center list** make up all 3 rosters. Of course, because of how player positions are encoded in the data, there may be some overlap that we'll have to look out for.
 
-### Model Evaluation
+### Model Evaluation Criteria
 
-All things considered, we'll simply want our model to have the best sorting ability (as opposed to evaluating model performance by accuracy, specificity, recall, etc). To characterize this in a way that is insensitive to unbalanced classes (as in our case), we used **Area under the ROC curve (AUC)** as the criterion for cross-validation. The **receiver operating characteristic (ROC)** curve is a plot of *true positive rate* (TPR) against *false positive rate* at various threshold values, so the AUC describes the probability that, given a random player, our model can distinguish between an All-NBA team member and non-member.
+#### Area Under the ROC Curve (AUROC)
 
-Using AUC as our performance metric is easily done by adding the argument `type.measure = "auc"` to the `cv.glmnet` call.
+All things considered, we'll simply want our model to have the best sorting ability (as opposed to evaluating model performance by accuracy, specificity, recall, etc). To characterize this in a way that is insensitive to unbalanced classes (as in our case), we used **Area under the ROC curve (AUROC)** as the criterion for cross-validation. The **receiver operating characteristic (ROC)** curve is a plot of *true positive rate* (TPR) against *false positive rate* at various threshold values, so the AUC describes the probability that, given a random player, our model can distinguish between an All-NBA team member and non-member.
 
-### Lasso {.tabset}
+Using AUROC as our performance metric is easily done by adding the argument `type.measure = "auc"` to the `cv.glmnet` call.
+
+#### Area Under the Precision-Recall Curve (AUPRC)
+
+Precision is the ratio of the number of true positives (TP) divided by the sum of true positives and false positives (FP):
+
+$$Precision = \frac{TP}{TP + FP}$$
+
+It basically describes the **proportion of positive class predictions** (i.e. `allNBA = 1`) **that were actually correct**.
+
+Recall is the ratio of the number of true positives divided by the sum of true positives and false negatives (FN):
+
+$$Recall = \frac{TP}{TP + FN}$$
+
+It describes the **proportion of correctly identified All-NBA members**.
+
+Considering **both** precision and recall is particularly useful when a problem involves imbalanced classes, which is the case with our problem (i.e. there are many more non-members than there are members). Note that, in the equations above, **we aren't concerned with the number of true negatives** - because of the heavy class imbalance, our model's ability to predict the negative class isn't as important as its ability to **correctly predict the minority (positive) class**.
+
+Though it isn't as easily interpretable as the area under the ROC curve, the area under the precision-recall curve also provides a measure of model performance. A perfect classifier will have $AUC = 1.0$. So, as with the ROC curve, an AUC value closer to $1.0$ (its graph as close to the upper-right corner as possible) suggests better performance.
+
+We can calculate the area under the precision-recall curve using the `pr.curve` function from the `PRROC` package.
+
+#### Cross-Entropy
+
+**Cross-Entropy** is a typical cost function used with classifiers. The value of the cross-entropy of a given observation is based on two things:
+
+1. The actual class
+2. The model's probability of the actual class
+
+For binary classification in particular, cross-entropy can be calculated as
+
+$$-[y \ ln (p) + (1-y) \ ln(1-p)]$$
+
+where $y$ is the indicator ($0$ or $1$) and $p$ is the predicted probability. Cross-entropy loss increases rapidly for non-member predictions when the player actually made any roster, and vice versa. A perfect model will have a loss of 0, so the lower the cross-entropy loss, the better a model performed.
+
+From the `ROCR` package, we can use `performance()` with the argument `measure = "mxe"` to calculate mean cross-entropy.
+
+### Lasso 
 
 $L_1$, or Lasso (Least Absolute Shrinkage and Selection Operator), regularization relies on the $L_1$ norm (absolute size) to impose penalties on coefficients $\beta_i$.
 
@@ -98,124 +137,178 @@ y <- train.data$allNBA
 
 # Find optimal lambda via cross-validation
 set.seed(42)
-cv.lasso <- cv.glmnet(x, y, alpha = 1, family = "binomial", type.measure = "auc") # Perform cross-validation based on AUC
+cv.lasso <- cv.glmnet(x, y, alpha = 1, family = "binomial", type.measure = "auc") # Perform cross-validation based on AUROC
 
 # Make predictions on test data
 x.test <- test.data %>% select(-allNBA) %>% as.matrix
 p <- cv.lasso %>% predict(newx = x.test, s = "lambda.min", type = "response") %>% as.numeric # store probabilities
 ```
 
-```{r, echo=FALSE}
-# Create a test df
-results.lasso <- players %>% 
+```{r lasso metrics, echo=FALSE}
+# Predictions and actual labels
+p.lasso <- p
+class.labels <- test.data %>% select(allNBA)
+
+fg <- p.lasso[class.labels == 1]
+bg <- p.lasso[class.labels == 0]
+
+# Create roc and pr curves
+roc.lasso <- roc.curve(scores.class0 = fg, scores.class1 = bg, curve = T)
+pr.lasso <- pr.curve(scores.class0 = fg, scores.class1 = bg, curve = T)
+
+# Create df for tpr/fpr values
+roc.lasso.df <- roc.lasso$curve[,1:2] %>% as.data.frame()
+colnames(roc.lasso.df) <- c("fpr", "tpr") # column names
+roc.lasso.df$model <- "lasso" # add model column
+
+auroc.lasso <- roc.lasso.df %>% ggplot(aes(x = fpr, y = tpr)) + 
+  geom_line(size = 1.2, color = "#48CB6F") + 
+  labs(x = "False Positive Rate",
+         y = "True Positive Rate",
+         title = paste("LASSO ROC Curve \n AUC = ", max(cv.lasso$cvm)))
+
+# Create df for prec/rec values
+pr.lasso.df <- pr.lasso$curve[,1:2] %>% as.data.frame()
+colnames(pr.lasso.df) <- c("Recall", "Precision") # column names
+pr.lasso.df$model <- "lasso" # add model column
+
+auprc.lasso <- pr.lasso.df %>% ggplot(aes(x = Recall, y = Precision)) +
+  geom_line(size = 1.2, color = "#48CB6F") +
+  labs(title = paste("LASSO Precision-Recall Curve \n AUC = ", pr.lasso$auc.integral))
+
+# Mean Cross-Entropy (cost function)
+mxe.lasso <- ROCR::prediction(p.lasso, class.labels) %>% ROCR::performance("mxe") %>% attr("y.values") %>% unlist
+```
+
+To explore the predictions for each year, we can use the interactive tables below, which were created using the `DT` package.
+
+#### {.tabset}
+
+```{r datatable, echo=FALSE}
+# create results df and collapse position for data table
+results.lasso.dt <- players %>%
   filter(year >= 2006) %>% 
-  mutate(probability = p) %>% 
-  select(playerID, year, allNBAFirstTeam, allNBASecondTeam, allNBAThirdTeam, allNBA, probability, center, forward, guard)
+  mutate(
+    probability = round(p, 4),
+    position = case_when(
+      center == 1 ~ "center",
+      forward == 1 ~ "forward",
+      guard == 1 ~ "guard")) %>% 
+  filter(probability >= 0.01) %>% 
+  select(playerID, year, allNBAFirstTeam, allNBASecondTeam, allNBAThirdTeam, allNBA, probability, position)
 
-# Predictions for 2006-2007
-lasso.guard.predictions.2006 <- results.lasso %>% 
-  filter(year == 2006, guard == 1) %>%
-  select(-c(center, forward, guard)) %>% 
-  arrange(desc(probability)) %>% 
-  head(10)
-
-lasso.forward.predictions.2006 <- results.lasso %>% 
-  filter(year == 2006, forward == 1) %>%
-  select(-c(center, forward, guard)) %>% 
-  arrange(desc(probability)) %>% 
-  head(10)
-
-lasso.center.predictions.2006 <- results.lasso %>% 
-  filter(year == 2006, center == 1) %>%
-  select(-c(center, forward, guard)) %>% 
-  arrange(desc(probability)) %>% 
-  head(10)
+# Convert columns for easy filtering
+results.lasso.dt$position <- as.factor(results.lasso.dt$position)
+results.lasso.dt$year <- as.character(results.lasso.dt$year) %>% as.factor
 ```
 
-#### 2006 Guard Predictions
+##### Guards
 
-```{r}
-lasso.guard.predictions.2006
+```{r, echo=FALSE}
+results.lasso.dt.guard <- results.lasso.dt %>% 
+  filter(position == "guard") %>% 
+  select(-position)
+
+DT::datatable(results.lasso.dt.guard, filter = 'top',
+              rownames = FALSE,
+              colnames = c("playerID", "year", "First Team", "Second Team", "Third Team", "allNBA", "probability"),
+              caption = 'Sort by year and probability to find desired predictions!',
+              options = list(
+                autoWidth = TRUE,
+                order = list(list(1, 'desc'), list(6, 'desc'))
+))
 ```
 
-#### 2006 Forward Predictions
+##### Forwards
 
-```{r}
-lasso.forward.predictions.2006
+```{r, echo=FALSE}
+results.lasso.dt.forward <- results.lasso.dt %>% 
+  filter(position == "forward") %>% 
+  select(-position)
+
+DT::datatable(results.lasso.dt.forward, filter = 'top',
+              rownames = FALSE,
+              colnames = c("playerID", "year", "First Team", "Second Team", "Third Team", "allNBA", "probability"),
+              caption = 'Sort by year and probability to find desired predictions!',
+              options = list(
+                autoWidth = TRUE,
+                order = list(list(1, 'desc'), list(6, 'desc'))
+))
 ```
 
-#### 2006 Center Predictions
+##### Centers
 
-```{r}
-lasso.center.predictions.2006
+```{r, echo=FALSE}
+results.lasso.dt.center <- results.lasso.dt %>% 
+  filter(position == "center") %>% 
+  select(-position)
+
+DT::datatable(results.lasso.dt.center, filter = 'top',
+              rownames = FALSE,
+              colnames = c("playerID", "year", "First Team", "Second Team", "Third Team", "allNBA", "probability"),
+              caption = 'Sort by year and probability to find desired predictions!',
+              options = list(
+                autoWidth = TRUE,
+                order = list(list(1, 'desc'), list(6, 'desc'))
+))
 ```
 
-#### AUC
-
-```{r}
-# Max AUC
-max(cv.lasso$cvm)
-```
-
-#### Regression Coefficients
-
+##### Positive Coefficients
 ```{r, echo=FALSE}
 # Regression coefficients using lambda.min 
 l.coef <- coef(cv.lasso, s = "lambda.min")
-l.coef[order(l.coef[,1], decreasing = TRUE),]
+l.coef <- l.coef[order(l.coef[,1], decreasing = TRUE),]
+l.coef[l.coef > 0]
 ```
 
-###
-
-Here are the predictions for the 2011-2012 season:
-
-### {.tabset}
+##### Zero Coefficients
 ```{r, echo=FALSE}
-# Predictions for 2011-2012
-lasso.guard.predictions.2011 <- results.lasso %>% 
-  filter(year == 2011, guard == 1) %>%
-  select(-c(center, forward, guard)) %>% 
-  arrange(desc(probability)) %>% 
-  head(15)
-
-lasso.forward.predictions.2011 <- results.lasso %>% 
-  filter(year == 2011, forward == 1) %>%
-  select(-c(center, forward, guard)) %>% 
-  arrange(desc(probability)) %>% 
-  head(15)
-
-lasso.center.predictions.2011 <- results.lasso %>% 
-  filter(year == 2011, center == 1) %>%
-  select(-c(center, forward, guard)) %>% 
-  arrange(desc(probability)) %>% 
-  head(15)
+# Regression coefficients using lambda.min 
+l.coef[l.coef == 0]
 ```
 
-#### 2011 Guard Predictions
+##### Negative Coefficients
+
+```{r, echo=FALSE}
+# Regression coefficients using lambda.min 
+l.coef[l.coef < 0]
+```
+
+#### Lasso Metrics
 
 ```{r}
-lasso.guard.predictions.2011
+# Plots
+gridExtra::grid.arrange(auroc.lasso, auprc.lasso, ncol=2)
+
+# AUROC
+max(cv.lasso$cvm)
+
+# AUPRC
+pr.lasso$auc.integral
+
+# Cross-Entropy
+mxe.lasso
 ```
 
-#### 2011 Forward Predictions
-
-```{r}
-lasso.forward.predictions.2011
-```
-
-#### 2011 Center Predictions
-
-```{r}
-lasso.center.predictions.2011
-```
-
-###
-
-From the looks of it, our model is doing a pretty decent job! The correct players are within the top 15 most probable players per position, according to this model. But, let's see if we can make an adjustment in our train/test split to try and improve our model.
+From the looks of it, our model is doing a pretty decent job! The AUROC and AUPRC of this model are $0.9934185$ and $0.7796794$ (respectively), and it looks like the correct players are within the top 15 or so most probable players per position. But, let's see if we can make an adjustment in our train/test split to try and improve our model.
 
 ### Maximizing training data {.tabset}
 
-Since we'd presumably use this model to predict All-NBA teams every year, we should try using **only the last season (2011-2012)** as our test set. Hopefully, maximizing our training data will improve the model.
+Since we'd presumably use this model to predict All-NBA teams every year, we should try using **only the last season (2011-2012)** as our test set. Hopefully, maximizing our training data will improve the model. We'll also make corrections to the positions of Rajon Rondo, Dwight Howard, and Dirk Nowitzki.
+
+```{r, echo=FALSE}
+# Correct Rajon Rondo's position
+players$forward[players$playerID == "rondora01"] <- 0
+players$guard[players$playerID == "rondora01"] <- 1
+
+# Correct Dwight Howard's position
+players$forward[players$playerID == "howardw01"] <- 0
+players$center[players$playerID == "howardw01"] <- 1
+
+# Correct Dirk Nowitzki's position
+players$forward[players$playerID == "nowitdi01"] <- 1
+players$center[players$playerID == "nowitdi01"] <- 0
+```
 
 ```{r, cache=TRUE}
 # Overwrite train/test sets
@@ -238,6 +331,42 @@ cv.lasso <- cv.glmnet(x, y, alpha = 1, family = "binomial", type.measure = "auc"
 # Make predictions on test data
 x.test <- test.data %>% select(-allNBA) %>% as.matrix
 p <- cv.lasso %>% predict(newx = x.test, s = "lambda.min", type = "response") %>% as.numeric
+```
+
+```{r lasso metrics 2, echo=FALSE}
+# Predictions and actual labels
+p.lasso <- p
+class.labels <- test.data %>% select(allNBA)
+
+fg <- p.lasso[class.labels == 1]
+bg <- p.lasso[class.labels == 0]
+
+# Create roc and pr curves
+roc.lasso <- roc.curve(scores.class0 = fg, scores.class1 = bg, curve = T)
+pr.lasso <- pr.curve(scores.class0 = fg, scores.class1 = bg, curve = T)
+
+# Create df for tpr/fpr values
+roc.lasso.df <- roc.lasso$curve[,1:2] %>% as.data.frame()
+colnames(roc.lasso.df) <- c("fpr", "tpr") # column names
+roc.lasso.df$model <- "lasso" # add model column
+
+auroc.lasso <- roc.lasso.df %>% ggplot(aes(x = fpr, y = tpr)) + 
+  geom_line(size = 1.2, color = "#48CB6F") + 
+  labs(x = "False Positive Rate",
+         y = "True Positive Rate",
+         title = paste("LASSO ROC Curve \n AUC = ", max(cv.lasso$cvm)))
+
+# Create df for prec/rec values
+pr.lasso.df <- pr.lasso$curve[,1:2] %>% as.data.frame()
+colnames(pr.lasso.df) <- c("Recall", "Precision") # column names
+pr.lasso.df$model <- "lasso" # add model column
+
+auprc.lasso <- pr.lasso.df %>% ggplot(aes(x = Recall, y = Precision)) +
+  geom_line(size = 1.2, color = "#48CB6F") +
+  labs(title = paste("LASSO Precision-Recall Curve \n AUC = ", pr.lasso$auc.integral))
+
+# Mean Cross-Entropy (cost function)
+mxe.lasso <- ROCR::prediction(p.lasso, class.labels) %>% ROCR::performance("mxe") %>% attr("y.values") %>% unlist
 ```
 
 ```{r, echo=FALSE}
@@ -285,13 +414,6 @@ lasso.forward.predictions.2011
 lasso.center.predictions.2011
 ```
 
-#### AUC
-
-```{r}
-# Display AUC using lambda.min
-max(cv.lasso$cvm)
-```
-
 #### Positive Coefficients
 ```{r, echo=FALSE}
 # Regression coefficients using lambda.min 
@@ -313,11 +435,24 @@ l.coef[l.coef == 0]
 l.coef[l.coef < 0]
 ```
 
-###
+### Lasso Metrics
 
-While the predicted line-ups didn't change, the top contenders for each position have higher probabilities relative to the other model. It looks like taking advantage of as many seasons as possible gave this model a slight edge over the previous one, so we'll use this method when building the others.
+```{r}
+# Plots
+gridExtra::grid.arrange(auroc.lasso, auprc.lasso, ncol=2)
 
-Overall, it looks like our lasso model did a fairly good job predicting All-NBA membership in general. Except for Rajon Rondo (who was apparently incorrectly coded as a forward in 2011) and Carmelo Anthony, the correct players are placed in the top 10 for each position.
+# AUROC
+max(cv.lasso$cvm)
+
+# AUPRC
+pr.lasso$auc.integral
+
+# Cross-Entropy
+mxe.lasso
+```
+
+For the most part the predicted line-ups didn't change (Brandon Jennings is no longer in the top 6, moving Tony Parker closer to the appropriate rank). Additionally, the top contenders for each position have higher probabilities relative to the previous model. Despite a slightly lower AUROC of $0.9930087$, the AUPRC is much-improved at $0.8369115$. It also looks like taking advantage of as many seasons as possible gave this model a slight edge over the previous one, given the slight improvement in cross-entropy losses $(0.04119739 < 0.04313924)$. Considering all of these facts, **we'll use this method when building the other models**.
+
 
 #### Interpreting the Regression Coefficients
 
@@ -327,7 +462,8 @@ The **logit** mentioned at the beginning of the report represents the **log odds
 
 It's interesting to see that the lasso model "turned off" many of the offensive variables like points, assists, and field goals, and even more interesting that it *penalizes* others like field goal attempts. Some of these penalties make sense, for instance, personal fouls and turnovers per game. For others, like blocks, the penalties are probably a result of the algorithm adjusting for bias due to other features **over-representing the raw statistic**. This can be seen by comparing the `block` coefficient to the `blocksPerGame` coefficient. It looks like our features `GPRatio` and `healthy`, which were inspired by our exploratory data analysis, turned out to be good indicators of All-NBA team membership. Sweet.
 
-A cursory glance at the results, as well as the AUC of $0.9930087$ suggest that this is a pretty good model.
+
+Overall, it looks like this lasso model did a fairly good job predicting All-NBA membership in general. Except for Rajon Rondo and Carmelo Anthony, the correct players are placed in the top 10 for each position. A cursory glance of the results, particularly the AUC of $0.9930087$, suggest that this is a pretty good model.
 
 ### Ridge {.tabset}
 
@@ -346,6 +482,42 @@ cv.ridge <- cv.glmnet(x, y, alpha = 0, family = "binomial", type.measure = "auc"
 
 # Make predictions on test data
 p <- cv.ridge %>% predict(newx = x.test, s = "lambda.min", type = "response") %>% as.numeric # store probabilities
+```
+
+```{r ridge metrics, echo=FALSE}
+# Predictions and actual labels
+p.ridge <- p
+class.labels <- test.data %>% select(allNBA)
+
+fg <- p.ridge[class.labels == 1]
+bg <- p.ridge[class.labels == 0]
+
+# Create roc and pr curves
+roc.ridge <- roc.curve(scores.class0 = fg, scores.class1 = bg, curve = T)
+pr.ridge <- pr.curve(scores.class0 = fg, scores.class1 = bg, curve = T)
+
+# Create df for tpr/fpr values
+roc.ridge.df <- roc.ridge$curve[,1:2] %>% as.data.frame()
+colnames(roc.ridge.df) <- c("fpr", "tpr") # column names
+roc.ridge.df$model <- "ridge" # add model column
+
+auroc.ridge <- roc.ridge.df %>% ggplot(aes(x = fpr, y = tpr)) + 
+  geom_line(size = 1.2, color = "#5AA2CC") + 
+  labs(x = "False Positive Rate",
+       y = "True Positive Rate",
+       title = paste("Ridge ROC Curve \n AUC = ", max(cv.ridge$cvm)))
+
+# Create df for prec/rec values
+pr.ridge.df <- pr.ridge$curve[,1:2] %>% as.data.frame()
+colnames(pr.ridge.df) <- c("Recall", "Precision") # column names
+pr.ridge.df$model <- "ridge" # add model column
+
+auprc.ridge <- pr.ridge.df %>% ggplot(aes(x = Recall, y = Precision)) +
+  geom_line(size = 1.2, color = "#5AA2CC") +
+  labs(title = paste("Ridge Precision-Recall Curve \n AUC = ", pr.ridge$auc.integral))
+
+# Mean Cross-Entropy (cost function)
+mxe.ridge <- ROCR::prediction(p.ridge, class.labels) %>% ROCR::performance("mxe") %>% attr("y.values") %>% unlist
 ```
 
 ```{r, echo=FALSE}
@@ -393,13 +565,6 @@ ridge.forward.predictions.2011
 ridge.center.predictions.2011
 ```
 
-#### AUC
-
-```{r}
-# Display AUC for lambda.min
-max(cv.ridge$cvm)
-```
-
 #### Positive Coefficients
 
 ```{r, echo=FALSE}
@@ -416,8 +581,21 @@ r.coef[r.coef > 0]
 r.coef[r.coef < 0]
 ```
 
+### Ridge Metrics
 
-###
+```{r}
+# Plots
+gridExtra::grid.arrange(auroc.ridge, auprc.ridge, ncol=2)
+
+# AUROC
+max(cv.ridge$cvm)
+
+# AUPRC
+pr.ridge$auc.integral
+
+# Cross-Entropy
+mxe.ridge
+```
 
 #### Ridge Discussion
 
@@ -425,7 +603,7 @@ Like the Lasso model, the Ridge model correctly identified the First Team, as we
 
 Note that, as mentioned at the top of the section, all of the variables contribute, though some coefficients are quite small and thus bear little effect. the `GPRatio` and `healthy` variables are much less significant compared to the Lasso model, but many of the offensive stats are much more important to the Ridge model.
 
-Though the Ridge model pulled off an AUC of $0.9915167$, it looks like the predictions don't quite match up as well as the Lasso model. 
+Though the Ridge model pulled off a high AUROC of $0.9915167$, it doesn't perform as well as the lasso model based on the AUPRC and cross-entropy. 
 
 ### Elastic-net {.tabset}
 
@@ -454,6 +632,42 @@ cv.elastic <- cv.glmnet(x, y, alpha = alpha, family = "binomial", type.measure =
 # Make predictions with the elastic net model
 set.seed(42)
 p <- cv.elastic %>% predict(newx = x.test, s = "lambda.min", type = "response") %>% as.numeric
+```
+
+```{r elastic metrics, echo=FALSE}
+# Predictions and actual labels
+p.elastic <- p
+class.labels <- test.data %>% select(allNBA)
+
+fg <- p.elastic[class.labels == 1]
+bg <- p.elastic[class.labels == 0]
+
+# Create roc and pr curves
+roc.elastic <- roc.curve(scores.class0 = fg, scores.class1 = bg, curve = T)
+pr.elastic <- pr.curve(scores.class0 = fg, scores.class1 = bg, curve = T)
+
+# Create df for tpr/fpr values
+roc.elastic.df <- roc.elastic$curve[,1:2] %>% as.data.frame()
+colnames(roc.elastic.df) <- c("fpr", "tpr") # column names
+roc.elastic.df$model <- "elastic" # add model column
+
+auroc.elastic <- roc.elastic.df %>% ggplot(aes(x = fpr, y = tpr)) + 
+  geom_line(size = 1.2, color = "#F69B95") + 
+  labs(x = "False Positive Rate",
+       y = "True Positive Rate",
+       title = paste("Elastic-Net ROC Curve \n AUC = ", max(loop$cvm)))
+
+# Create df for prec/rec values
+pr.elastic.df <- pr.elastic$curve[,1:2] %>% as.data.frame()
+colnames(pr.elastic.df) <- c("Recall", "Precision") # column names
+pr.elastic.df$model <- "elastic" # add model column
+
+auprc.elastic <- pr.elastic.df %>% ggplot(aes(x = Recall, y = Precision)) +
+  geom_line(size = 1.2, color = "#F69B95") +
+  labs(title = paste("Elastic-Net Precision-Recall Curve \n AUC = ", pr.elastic$auc.integral))
+
+# Mean Cross-Entropy (cost function)
+mxe.elastic <- ROCR::prediction(p.elastic, class.labels) %>% ROCR::performance("mxe") %>% attr("y.values") %>% unlist
 ```
 
 ```{r, echo=FALSE}
@@ -501,13 +715,6 @@ elastic.forward.predictions.2011
 elastic.center.predictions.2011
 ```
 
-#### AUC
-
-```{r}
-# Maximum AUC
-max(loop$cvm)
-```
-
 #### Positive Coefficients
 
 ```{r, echo=FALSE}
@@ -531,12 +738,28 @@ e.coef[e.coef == 0]
 e.coef[e.coef < 0]
 ```
 
-###
+### Elastic-Net Metrics
 
-We can see that the elastic-net model did a pretty good job predicting all three teams. Like the other two models, the First Team and most of the Second Team are correctly predicted and the true roster are all within the top 15 most probable players. Overall, the model correctly predicts the most players, and has the highest AUC of $0.9931599$.
+```{r}
+# Plots
+gridExtra::grid.arrange(auroc.elastic, auprc.elastic, ncol=2)
+
+# AUROC
+max(loop$cvm)
+
+# AUPRC
+pr.elastic$auc.integral
+
+# Cross-Entropy
+mxe.elastic
+```
+
+We can see that the elastic-net model did a pretty good job predicting all three teams. Like the other two models, the First Team and most of the Second Team are correctly predicted and the true roster are all within the top 15 most probable players. Overall, the model correctly predicts the most players, and has the highest AUROC of $0.9931599$, as well as the highest AUPRC of $0.8411672$. It has an excellent cross-entropy loss of only $0.04172166$, though its not as low as the lasso model.
 
 ## Model Comparison
 ***
+### Prediction Summary {.tabset}
+
 There are a few things to note:
 
 1. Dirk Nowitzki actually made the team as a *forward*, though he's coded as a center.
@@ -545,7 +768,7 @@ There are a few things to note:
 
 With these adjustments, the results are as follows:
 
-### 2012 All-NBA First Team
+#### 2012 All-NBA First Team
 
 ```{r 2012 first team summary, echo=FALSE, message=FALSE, warnings=FALSE, results='asis'}
 fts <- " 
@@ -560,7 +783,7 @@ fts <- "
 cat(fts)
 ```
 
-### 2012 All-NBA Second Team
+#### 2012 All-NBA Second Team
 
 ```{r 2012 second team summary, echo=FALSE, message=FALSE, warnings=FALSE, results='asis'}
 sts <- " 
@@ -575,7 +798,7 @@ sts <- "
 cat(sts)
 ```
 
-### 2012 All-NBA Third Team
+#### 2012 All-NBA Third Team
 
 ```{r 2012 third team summary, echo=FALSE, message=FALSE, warnings=FALSE, results='asis'}
 tts <- " 
@@ -590,15 +813,102 @@ tts <- "
 cat(tts) # output the table in a format good for HTML/PDF/docx conversion
 ```
 
-### Discussion and Summary
+### Roster Discussion
 
 Note that, in the tables above, players that are struck through did not make any roster (i.e. ~~Marcin Gortat~~, ~~Josh Smith~~, etc.). *Tony Parker* is italicized since he was predicted to make Third Team, but actually made Second Team.
 
-All 3 models correctly predicted the First Team roster, as well as 4 of 5 Second Team members. Interestingly, they all agreed that Deron Williams should have been on the Second Team (sorry Deron). The Third Team roster is where it gets hairy - the Lasso and Ridge models only correctly predicted 1 of 5 players, and Elastic-Net only got 2. Also note that, if Deron Williams wasn't ranked 4th on the Guards list, Tony Parker would have correctly made Second Team for the Elastic-Net model. Unfortunately, poor Rondo was only given a 0.066 probability of making a roster, so he still wouldn't have cracked Third Team on this model.
+**All 3 models correctly predicted the First Team roster, as well as 4 of 5 Second Team members**. Interestingly, they all agreed that Deron Williams should have been on the Second Team, though he didn't actually make any roster (sorry Deron). The Third Team roster is where it gets hairy - the Lasso and Ridge models only correctly predicted 1 of 5 players, and Elastic-Net only got 2. Also note that, if Deron Williams wasn't ranked 4th on the Guards list, Tony Parker would have correctly made Second Team for the Elastic-Net model. Unfortunately, poor Rondo was only given a 0.066 probability of making a roster, so he still wouldn't have cracked Third Team on this model.
 
-There are a lot of intangible factors that go into the All-NBA team selection, particularly since it's based on voting (not even by players and coaches). However, given that all 3 models correctly predicted 9 of 10 First and Second Team rosters, it seems that there's some semblance of agreement upon whatever criteria the voters judge worthiness. Whatever those criteria are, the First Team apparently seem to have it in spades, given their relative probabilities in each model. Voters seem to agree on the obvious First-Teamers (and Second-Teamers for that), but Third Team is where everyone seems to have an opinion. 
+There are a lot of intangible factors that go into the All-NBA team selection, particularly since it's **determined by a point-based voting system** - and not by players and coaches, but by a panel of sportswriters and broadcasters. From [Wikipedia](https://en.wikipedia.org/wiki/All-NBA_Team):
 
-In terms of AUC, the elastic-net model narrowly edged out the lasso model ($0.9931599 > 0.9930087$). More importantly, however, it identified more correct players than the other two models (12/15). Based on this and the AUC, we can say that **elastic-net provides the best model**. 
+> Players receive five points for a first team vote, three points for a second team vote, and one point for a third team vote.
+
+This provides a bit of an explanation for the high accuracy of the First and Second teams as well as the low accuracy of the Third Team. Voters mostly seem to **agree on the obvious First- and Second-Teamers**, so those players rack up 5x or 3x the points than do Third-Team votes. Given the weight of the points, it makes sense that the Third Team roster has such variance. Not even the models seem to agree on Third Team, for that matter. 
+
+At any rate, given that all 3 models correctly predicted 9 of 10 First and Second Team rosters, it seems that there's some semblance of agreement upon whatever criteria the voters judge worthiness. But whatever those criteria are, the First Team apparently seem to have it in spades, given their relative probabilities in each model.
+
+### Evaluation Metrics
+
+A direct comparison of the ROC and Precision-Recall curves, as well as a summary of the evaluation metrics, are provided below. 
+
+```{r model comparison plots, echo=FALSE}
+# combine AUROC and AUPRC data
+combined.roc <- rbind(roc.lasso.df, roc.ridge.df, roc.elastic.df)
+combined.pr <- rbind(pr.lasso.df, pr.ridge.df, pr.elastic.df)
+
+# Create AUROC plot
+combined.auroc <- combined.roc %>% 
+  ggplot(aes(x = fpr, y = tpr, color = model)) +
+  geom_line(size = 1.2, alpha = 0.7) +
+  labs(x = "False Positive Rate",
+         y = "True Positive Rate",
+         title = "ROC Curves") +
+  theme(legend.position = "none")
+
+# Create AUPRC plot
+combined.auprc <- combined.pr %>% 
+  ggplot(aes(x = Recall, y = Precision, color = model)) +
+  geom_line(size = 1.2, alpha = 0.7) +
+  labs(title = "Precision-Recall Curves") +
+  theme(legend.position = c(0.1, 0.17))
+
+# Plot side by side
+gridExtra::grid.arrange(combined.auroc, combined.auprc, ncol = 2)
+```
+
+Note: The best value is highlighted in **green** and the worst in **red**.
+
+```{r metric summary, echo=FALSE}
+# Compile each metric
+auroc.metrics <- c(max(cv.lasso$cvm),
+                   max(cv.ridge$cvm),
+                   max(loop$cvm))
+
+auprc.metrics <- c(pr.lasso$auc.integral,
+                   pr.ridge$auc.integral,
+                   pr.elastic$auc.integral)
+
+mxe.metrics <- c(mxe.lasso,
+                 mxe.ridge,
+                 mxe.elastic)
+
+model.names <- c("Lasso", "Ridge", "Elastic-Net")
+
+# Create metric df
+metric.comp <- data.frame(Model = model.names,
+                          AUROC = auroc.metrics,
+                          AUPRC = auprc.metrics,
+                          Entropy = mxe.metrics)
+
+metric.comp %>% 
+  mutate(
+    AUROC = cell_spec(AUROC, "html", 
+                      background = case_when(
+                        AUROC == max(AUROC) ~ "#00BA38",
+                        AUROC == min(AUROC) ~ "#F80040",
+                        TRUE ~ "#FFFFFF")),
+    
+    AUPRC = cell_spec(AUPRC, "html", 
+                      background = case_when(
+                        AUPRC == max(AUPRC) ~ "#00BA38",
+                        AUPRC == min(AUPRC) ~ "#F80040",
+                        TRUE ~ "#FFFFFF")),
+    
+    Entropy = cell_spec(Entropy, "html", 
+                        background = case_when(
+                          Entropy == min(Entropy) ~ "#00BA38",
+                          Entropy == max(Entropy) ~ "#F80040",
+                          TRUE ~ "#FFFFFF"))
+  ) %>% 
+  kable(format = "html", escape = F) %>% 
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"))
+```
+
+The ROC Curves plot demonstrates the similarity in AUROC scores for each model, though we can barely see the edge that the elastic-net model has on the other two (it's above the other two curves). The Precision-Recall curves are a bit more scattered; it's difficult to tell which model wins from the plot alone. 
+
+The elastic-net model outperformed the lasso model based on AUROC and AUPRC, although the lasso model has a narrow edge in terms of cross-entropy. The ridge model consistently performed the worst across all metrics. Despite this, however, the **ridge and lasso models correctly predicted the same number of All-NBA team members**. 
+
+The elastic-net model identified the most correct players out of all models, although it only beat the other models by 1 player (11 out of 15 players correctly identified). Based on this and the fact that the elastic-net model won in 2 out of 3 evaluation metrics, we can say that **elastic-net provides the winning model**. 
 
 ## 2019 All-NBA Predictions 
 ***
@@ -664,7 +974,7 @@ elastic.forward.predictions.2019
 elastic.center.predictions.2019
 ```
 
-### 2019 All-NBA Predicted Roster
+### Predicted Roster
 
 ```{r, echo=FALSE}
 allnba.guard.2019 <- elastic.guard.predictions.2019 %>% .[1:6,1] %>% matrix(nrow = 2, byrow = FALSE)
