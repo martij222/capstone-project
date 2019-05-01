@@ -1,6 +1,15 @@
 # All-NBA Team Predictions - Capstone Project
 
-## Introduction
+## Quick Links
+
+Detailed reports for each stage of this project can be found on RPubs:
+
+1. [Data Cleaning](http://rpubs.com/martij222/all-nba-data-wrangling) 
+2. [Exploratory Data Analysis](http://rpubs.com/martij222/all-nba-eda)
+3. [Model Building](http://rpubs.com/martij222/all-nba-ml)
+4. [Web Scraping](http://rpubs.com/martij222/web-scraping)
+
+## Overview
 
 Founded in 1946, the National Basketball Association (NBA) is considered to be the premier basketball league in the world. Based in the United States, the NBA boasts millions of viewers not only in North America, but worldwide. Popularity has also surged in recent years; [total revenue increased by 8.5% over the previous season, hitting the $8 billion mark](https://www.forbes.com/sites/kurtbadenhausen/2019/02/06/nba-team-values-2019-knicks-on-top-at-4-billion/). 
 
@@ -17,11 +26,24 @@ The data used is from the [Men's Professional Basketball data set from Kaggle](h
 
 Additional data is scraped from [Basketball-Reference](https://www.basketball-reference.com/leagues/NBA_2019_totals.html) and used to predict the All-NBA rosters for the 2018-2019 regular season.
 
-## RPubs Reports
+## Summary of Results
 
-Detailed reports for each stage of this project can be found on RPubs:
+![Model Metrics Comparison Plot](https://github.com/martij222/capstone-project/blob/master/graphs/model-comp-plots.png)
+![Model Metrics Comparison Table](https://github.com/martij222/capstone-project/blob/master/graphs/model-comp-table.png)
 
-1. [Data Cleaning](http://rpubs.com/martij222/all-nba-data-wrangling) 
-2. [Exploratory Data Analysis](http://rpubs.com/martij222/all-nba-eda)
-3. [Model Building](http://rpubs.com/martij222/all-nba-ml)
-4. [Web Scraping](http://rpubs.com/martij222/web-scraping)
+
+Of the 3 regularized logistic regression models created, elastic-net provided the winning model.
+
+### 2019 All-NBA Team Predictions
+
+The winning model predicts the following roster for the 2019 All-NBA Team:
+
+| Position      | First Team            | Second Team      | Third Team         |
+|---------------|:---------------------:|:----------------:|:------------------:|
+| Guard         | James Harden          | Stephen Curry    | Kemba Walker       |
+| Guard         | Russell Westbrook     | Damian Lillard   | Kyrie Irving       |
+| Forward       | Giannis Antetokounmpo | Paul George      | Kawhi Leonard      |
+| Forward       |	LeBron James          | Kevin Durant     | Blake Griffin      |
+| Center        |	Anthony Davis         | Joel Embiid      | Karl-Anthony Towns |
+
+As of April 30, 2019, the actual teams have not yet been announced.
