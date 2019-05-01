@@ -2,6 +2,11 @@
 
 ## Quick Links
 
+Project Deliverables
+1. [Final Report](https://github.com/martij222/capstone-project/blob/master/final_report.md)
+2. [Milestone Report](https://github.com/martij222/capstone-project/blob/master/milestone_report.md)
+3. [Presentation Slides](https://github.com/martij222/capstone-project/blob/master/presentation_slides.pptx)
+
 Detailed reports for each stage of this project can be found on RPubs:
 
 1. [Data Cleaning](http://rpubs.com/martij222/all-nba-data-wrangling) 
