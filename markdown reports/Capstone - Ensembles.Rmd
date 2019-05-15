@@ -1,0 +1,819 @@
+---
+title: "Decision Trees"
+author: "James Martinez"
+date: "May 15, 2019"
+output:
+  html_document:
+    df_print: paged
+---
+***
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, error = TRUE)
+pkgs <- list("glmnet", "doParallel", "foreach", "tidyverse", "kableExtra", "caret", "PRROC")
+lapply(pkgs, require, character.only = T)
+registerDoParallel(cores = 8)
+```
+
+## Introduction
+***
+
+This report is a continuation of the All-NBA Team Capstone project, which utilizes [historical NBA statistics from 1937 to 2012](https://www.kaggle.com/open-source-sports/mens-professional-basketball) to predict All-NBA Teams. It will cover the ensemble modeling of the **complete**  player data using the `randomForest` and `gbm` packages.
+See [this report](http://rpubs.com/martij222/web-scraping) for web scraping the 2018-2019 stats.
+
+The [data cleaning](http://rpubs.com/martij222/all-nba-data-wrangling), [exploratory data analysis](http://rpubs.com/martij222/all-nba-eda), and [logistic regression model](http://rpubs.com/martij222/483891) reports are also on RPubs, as well as my [capstone project repository](https://github.com/martij222/capstone-project).
+
+### Loading and Splitting the Data
+
+For this report, we'll use the complete set of NBA stats to build this model, reserving the 2018 season as the test set. Then, we'll use the current 2019 stats to make predictions for this year's All-NBA team rosters.
+
+```{r load data}
+p1 <- as_tibble(read.csv("players_EDA.csv")) %>% select(-c(allDefFirstTeam, allDefSecondTeam, allNBAFirstTeam, allNBASecondTeam, allNBAThirdTeam, MVP, defPOTY))
+p2 <- as_tibble(read.csv("players_2019.csv"))
+
+players <- rbind(p1, p2)
+```
+
+```{r split data}
+train.data <- players %>% 
+  filter(year < 2018) %>% 
+  select(-c(playerID, year, tmID, center, forward, guard))
+
+test.data <- players %>% 
+  filter(year == 2018) %>% 
+  select(-c(playerID, year, tmID, center, forward, guard))
+```
+
+### Theory
+
+#### Decision Trees
+
+Decision trees model data by building "trees" of heirarchical branches. Branches are made until they reach "leaves" that represent predictions. The main advantage of decision trees over regression models is that they can model **non-linear** relationships. However, they are prone to overfitting; so much so that if they are completely unconstrained they can completely "memorize" the training data by creating more and more branches until each observation has it's own leaf! 
+
+To take advantage of their flexibility while preventing overfitting to the training data, we can use **ensembles**.
+
+#### Tree Ensembles
+
+Ensembles are machine learning methods of combining multiple models into a single, better model. There are 2 ensemble methods:
+
+1. **Bagging** - training multiple "strong (high complexity) learners" and combining them to "smooth out" their predictions.
+2. **Boosting** - training multiple "weak (low complexity) learners" that improve upon their predecessors, "boosting" model complexity.
+
+When the base models for ensembling are *decision trees*, they have special names:
+
+1. **Random Forests** (bagging) - trees are limited to a **random subset of features and observations** (hence the name).
+2. **Gradient Boosted Trees** (boosting obviously) - trees are constrained to a **maximum depth**, and subsequent trees try to correct previous prediction errors.
+
+## Basic Random Forests
+***
+
+Here we'll use the `randomForest` package to implement our first random forest model. We'll specify the `importance = TRUE` argument to inspect variable importance.
+
+```{r randomForest, message=FALSE}
+# Import library
+library(randomForest)
+
+# Make the outcome variable a factor
+train.data$allNBA <- as.factor(train.data$allNBA)
+test.data$allNBA <- as.factor(test.data$allNBA)
+
+# default rf model
+set.seed(42)
+rf <- randomForest(allNBA ~ ., data = train.data, importance = TRUE)
+rf
+varImpPlot(rf)
+```
+
+```{r}
+test <- test.data %>% select(-allNBA)
+
+rf.pred <- predict(rf, test, type = "prob")
+
+rf.results <- players %>%
+  filter(year == 2018) %>% 
+  mutate(probability = as.vector(rf.pred[,2])) %>% 
+  select(playerID, year, allNBA, probability, center, forward, guard)
+
+rf.centers <- rf.results %>% 
+  filter(center == 1) %>%
+  select(-c(center, forward, guard)) %>% 
+  arrange(desc(probability)) %>% 
+  head(10)
+
+rf.forwards <- rf.results %>% 
+  filter(forward == 1) %>%
+  select(-c(center, forward, guard)) %>% 
+  arrange(desc(probability)) %>% 
+  head(10)
+
+rf.guards <- rf.results %>% 
+  filter(guard == 1) %>%
+  select(-c(center, forward, guard)) %>% 
+  arrange(desc(probability)) %>% 
+  head(10)
+```
+
+By default, the resulting randomForest object provides a confusion matrix, from which we can see the predicted class error for All-NBA team members is $\frac{179}{179+349} = 0.339015152$.
+
+The `varImpPlot()` function returns two different measures of variable importance: mean decrease in accuracy and mean Gini decrease. The mean accuracy decrease measures the difference in prediction error when each predictor variable is permuted. Gini importance is a measure of **node purity**. The lower the value the better, so a predictor that results in a large Gini decrease does a better job of separating members from non-members at a given node. 
+
+Looks like All-Star status and game score are at the top of both measures, which suggests that they are relatively strong predictors of All-NBA team membership.
+
+### Metrics
+
+```{r untuned rf metrics, echo=FALSE}
+# Actual labels
+p.rf <- rf.pred[,2]
+class.labels <- test.data %>% select(allNBA)
+
+fg <- p.rf[class.labels == 1]
+bg <- p.rf[class.labels == 0]
+
+# Create roc and pr curves
+roc.rf <- roc.curve(scores.class0 = fg, scores.class1 = bg, curve = T)
+pr.rf <- pr.curve(scores.class0 = fg, scores.class1 = bg, curve = T)
+
+# Create df for tpr/fpr values
+roc.rf.df <- roc.rf$curve[,1:2] %>% as.data.frame()
+colnames(roc.rf.df) <- c("fpr", "tpr") # column names
+roc.rf.df$model <- "tuned rf" # add model column
+
+auc.rf <- ROCR::prediction(p.rf, class.labels) %>% ROCR::performance("auc") %>% attr("y.values") %>% unlist
+auroc.rf <- roc.rf.df %>% ggplot(aes(x = fpr, y = tpr)) + 
+  geom_line(size = 1.2, color = "#48CB6F") + 
+  labs(x = "False Positive Rate",
+       y = "True Positive Rate",
+       title = paste("Basic RF ROC Curve \n AUC = ", auc.rf))
+
+# Create df for prec/rec values
+pr.rf.df <- pr.rf$curve[,1:2] %>% as.data.frame()
+colnames(pr.rf.df) <- c("Recall", "Precision") # column names
+pr.rf.df$model <- "rf" # add model column
+
+auprc.rf <- pr.rf.df %>% ggplot(aes(x = Recall, y = Precision)) +
+  geom_line(size = 1.2, color = "#48CB6F") +
+  labs(title = paste("Basic RF Precision-Recall Curve \n AUC = ", pr.rf$auc.integral))
+
+# Mean Cross-Entropy (cost function)
+mxe.rf <- ROCR::prediction(p.rf, class.labels) %>% ROCR::performance("mxe") %>% attr("y.values") %>% unlist
+```
+
+```{r}
+# Plots
+gridExtra::grid.arrange(auroc.rf, auprc.rf, ncol=2)
+
+# AUROC
+auc.rf
+
+# AUPRC
+pr.rf$auc.integral
+
+# Cross-Entropy
+mxe.rf
+```
+
+
+### Predictions {.tabset}
+
+#### Guards
+
+```{r}
+rf.guards
+```
+
+#### Forwards
+
+```{r}
+rf.forwards
+```
+
+
+#### Centers
+
+```{r}
+rf.centers
+```
+
+
+### Summary
+
+Even without tuning, the random forest model performs exceptionally well, with an AUROC of $0.9981510$, AUPRC of $0.9250388$, and cross-entropy loss of $0.2196089$. Adjusting for the fact that Jimmy Butler and LaMarcus Aldridge made the All-NBA team as forwards, and Anthony Davis as a center, the model **correctly predicted 13 out of 15** players!
+
+## Tuning with `caret`
+***
+
+We can attempt to improve on the previous model by tuning parameters with the `caret` package. 
+
+Here, we use **10-fold cross-validation** and a simple **grid search** to find the optimal value of `mtry`, which determines the number of variables randomly sampled as candidates for each split. The default value for classification is $mtry = \sqrt{p}$, where $p$ is the number of variables. In our case, the default is $mtry = \sqrt{55} = 7.416198$ (which can be seen in the results from the previous model), so we'll define our grid to cover the values 1 through 15.
+
+```{r rf mtry tuning, warning=FALSE, cache=TRUE}
+# Create tuning df
+train.data.tune <- train.data
+levels(train.data.tune$allNBA) <- c("allNBA", "not") # Rename levels for train()
+
+fitControl <- trainControl(method = "cv", 
+                           number = 10,
+                           search = "grid",
+                           classProbs = TRUE,
+                           summaryFunction = twoClassSummary)
+
+# Define grid of parameters to try
+tunegrid <- expand.grid(.mtry=c(1:15))
+
+set.seed(42)
+rf.tune <-  train(allNBA ~ ., data = train.data.tune,
+                    method = "rf",
+                    metric = "ROC",
+                    tuneGrid = tunegrid,
+                    trControl = fitControl)
+
+print(rf.tune)
+```
+
+```{r}
+plot(rf.tune)
+```
+
+The results show an optimal setting of `mtry = 12`, so we'll refit the model using this parameter and compare the results.
+
+```{r tuned rf}
+set.seed(42)
+rf.tune <- randomForest(allNBA ~ ., data = train.data, mtry = 12, importance = TRUE)
+rf.tune
+varImpPlot(rf.tune)
+```
+
+```{r tuned pred, echo=FALSE}
+rf.tune.pred <- predict(rf.tune, test, type = "prob")
+
+rf.tune.results <- players %>%
+  filter(year == 2018) %>% 
+  mutate(probability = as.vector(rf.tune.pred[,2])) %>% 
+  select(playerID, year, allNBA, probability, center, forward, guard)
+
+rf.tune.centers <- rf.tune.results %>% 
+  filter(center == 1) %>%
+  select(-c(center, forward, guard)) %>% 
+  arrange(desc(probability)) %>% 
+  head(10)
+
+rf.tune.forwards <- rf.tune.results %>% 
+  filter(forward == 1) %>%
+  select(-c(center, forward, guard)) %>% 
+  arrange(desc(probability)) %>% 
+  head(15)
+
+rf.tune.guards <- rf.tune.results %>% 
+  filter(guard == 1) %>%
+  select(-c(center, forward, guard)) %>% 
+  arrange(desc(probability)) %>% 
+  head(15)
+```
+
+### Metrics
+
+```{r tuned rf metrics, echo=FALSE}
+# Actual labels
+p.rf.tune <- rf.tune.pred[,2]
+class.labels <- test.data %>% select(allNBA)
+
+fg <- p.rf.tune[class.labels == 1]
+bg <- p.rf.tune[class.labels == 0]
+
+# Create roc and pr curves
+roc.rf.tune <- roc.curve(scores.class0 = fg, scores.class1 = bg, curve = T)
+pr.rf.tune <- pr.curve(scores.class0 = fg, scores.class1 = bg, curve = T)
+
+# Create df for tpr/fpr values
+roc.rf.tune.df <- roc.rf.tune$curve[,1:2] %>% as.data.frame()
+colnames(roc.rf.tune.df) <- c("fpr", "tpr") # column names
+roc.rf.tune.df$model <- "tuned rf" # add model column
+
+auc.rf.tune <- ROCR::prediction(p.rf.tune, class.labels) %>% ROCR::performance("auc") %>% attr("y.values") %>% unlist
+auroc.rf.tune <- roc.rf.tune.df %>% ggplot(aes(x = fpr, y = tpr)) + 
+  geom_line(size = 1.2, color = "#5AA2CC") + 
+  labs(x = "False Positive Rate",
+       y = "True Positive Rate",
+       title = paste("Tuned RF ROC Curve \n AUC = ", auc.rf.tune))
+
+# Create df for prec/rec values
+pr.rf.tune.df <- pr.rf.tune$curve[,1:2] %>% as.data.frame()
+colnames(pr.rf.tune.df) <- c("Recall", "Precision") # column names
+pr.rf.tune.df$model <- "rf.tune" # add model column
+
+auprc.rf.tune <- pr.rf.tune.df %>% ggplot(aes(x = Recall, y = Precision)) +
+  geom_line(size = 1.2, color = "#5AA2CC") +
+  labs(title = paste("Tuned RF Precision-Recall Curve \n AUC = ", pr.rf.tune$auc.integral))
+
+# Mean Cross-Entropy (cost function)
+mxe.rf.tune <- ROCR::prediction(p.rf.tune, class.labels) %>% ROCR::performance("mxe") %>% attr("y.values") %>% unlist
+```
+
+
+```{r}
+# Plots
+gridExtra::grid.arrange(auroc.rf.tune, auprc.rf.tune, ncol=2)
+
+# AUROC
+auc.rf.tune
+
+# AUPRC
+pr.rf.tune$auc.integral
+
+# Cross-Entropy
+mxe.rf.tune
+```
+
+
+### Predictions {.tabset}
+
+#### Guards
+
+```{r, echo=FALSE}
+rf.tune.guards
+```
+
+#### Forwards
+
+```{r, echo=FALSE}
+rf.tune.forwards
+```
+
+#### Centers
+
+```{r, echo=FALSE}
+rf.tune.centers
+```
+
+### Summary
+
+The tuned model actually has a slightly lower AUROC ($0.9979456$) and AUPRC ($0.9195144$). However, it has a lower cross-entropy loss. It also correctly predicts **13 out of 15** players.
+
+
+## Gradient Boosted Trees
+***
+
+As mentioned above, boosted trees use a different approach to ensembling than random forests. Random forests build an ensemble of deep, independent trees, while boosted trees sequentially build upon shallow and weak trees. We'll build a boosted tree model using the `gbm` package. Implementation is done following the [UC Business Analytics guide](http://uc-r.github.io/gbm_regression).
+
+### Basic Implementation
+
+We'll try a basic implementation of `gbm` using mostly default settings. However, we'll again use 10-fold cv, as well as increase `n.trees` to 5000 and decrease `shrinkage` to 0.01.
+
+```{r basic gbm, warning=FALSE, message=FALSE}
+# Load package
+library(gbm)
+
+# Reload train/test data
+train.data <- players %>% 
+  filter(year < 2018) %>% 
+  select(-c(playerID, year, tmID, center, forward, guard))
+
+test.data <- players %>% 
+  filter(year == 2018) %>% 
+  select(-c(playerID, year, tmID, center, forward, guard))
+
+# Build model
+set.seed(42)
+gb <- gbm(
+  formula = allNBA ~ .,
+  distribution = "bernoulli",
+  data = train.data,
+  n.trees = 5000,
+  shrinkage = 0.01,
+  cv.folds = 10)
+
+# Variable importance plot for top 10 variables
+vip::vip(gb)
+```
+
+Just as with the random forest models, the boosted tree model places high importance in All-Star status and game score.
+
+```{r echo=FALSE}
+gb.pred <- predict(gb, test, n.trees = gbm.perf(gb, plot.it = FALSE), type = "response") %>% as.vector
+
+gb.results <- players %>%
+  filter(year == 2018) %>% 
+  mutate(probability = gb.pred) %>% 
+  select(playerID, year, allNBA, probability, center, forward, guard)
+
+gb.cp <- gb.results %>% 
+  filter(allNBA == 1) %>% 
+  summarize(cumprob = sum(probability))
+
+gb.centers <- gb.results %>% 
+  filter(center == 1) %>%
+  select(-c(center, forward, guard)) %>% 
+  arrange(desc(probability)) %>% 
+  head(10)
+
+gb.forwards <- gb.results %>% 
+  filter(forward == 1) %>%
+  select(-c(center, forward, guard)) %>% 
+  arrange(desc(probability)) %>% 
+  head(15)
+
+gb.guards <- gb.results %>% 
+  filter(guard == 1) %>%
+  select(-c(center, forward, guard)) %>% 
+  arrange(desc(probability)) %>% 
+  head(15)
+```
+
+### Metrics
+
+```{r echo=FALSE}
+# Actual labels
+p.gb <- gb.pred
+class.labels <- test.data %>% select(allNBA)
+
+fg <- p.gb[class.labels == 1]
+bg <- p.gb[class.labels == 0]
+
+# Create roc and pr curves
+roc.gb <- roc.curve(scores.class0 = fg, scores.class1 = bg, curve = T)
+pr.gb <- pr.curve(scores.class0 = fg, scores.class1 = bg, curve = T)
+
+# Create df for tpr/fpr values
+roc.gb.df <- roc.gb$curve[,1:2] %>% as.data.frame()
+colnames(roc.gb.df) <- c("fpr", "tpr") # column names
+roc.gb.df$model <- "gb" # add model column
+
+auc.gb <- ROCR::prediction(p.gb, class.labels) %>% ROCR::performance("auc") %>% attr("y.values") %>% unlist
+auroc.gb <- roc.gb.df %>% ggplot(aes(x = fpr, y = tpr)) + 
+  geom_line(size = 1.2, color = "#F69B95") + 
+  labs(x = "False Positive Rate",
+       y = "True Positive Rate",
+       title = paste("Boosted Tree ROC Curve \n AUC = ", auc.gb))
+
+# Create df for prec/rec values
+pr.gb.df <- pr.gb$curve[,1:2] %>% as.data.frame()
+colnames(pr.gb.df) <- c("Recall", "Precision") # column names
+pr.gb.df$model <- "gb" # add model column
+
+auprc.gb <- pr.gb.df %>% ggplot(aes(x = Recall, y = Precision)) +
+  geom_line(size = 1.2, color = "#F69B95") +
+  labs(title = paste("Boosted Tree Precision-Recall Curve \n AUC = ", pr.gb$auc.integral))
+
+# Mean Cross-Entropy (cost function)
+mxe.gb <- ROCR::prediction(p.gb, class.labels) %>% ROCR::performance("mxe") %>% attr("y.values") %>% unlist
+```
+
+```{r}
+# Plots
+gridExtra::grid.arrange(auroc.gb, auprc.gb, ncol=2)
+
+# AUROC
+auc.gb
+
+# AUPRC
+pr.gb$auc.integral
+
+# Cross-Entropy
+mxe.gb
+```
+
+### Predictions {.tabset}
+
+#### Guards
+
+```{r, echo=FALSE}
+gb.guards
+```
+
+#### Forwards
+
+```{r, echo=FALSE}
+gb.forwards
+```
+
+#### Centers
+
+```{r, echo=FALSE}
+gb.centers
+```
+
+### Summary
+
+Without any tuning, the boosted tree model still has excellent AUROC, AUPRC, and cross-entropy loss. It predicts the **same number of correct players** as the random forest models, though the rosters are shuffled around a bit. Next, we'll try tuning some parameters using `caret`. 
+
+## Tuning the Boosted Tree Model
+
+`caret` provides the following 4 options for tuning parameters. From the [author's bookdown document](https://topepo.github.io/caret/train-models-by-tag.html#boosting):
+
+1. `n.trees` (# Boosting Iterations)
+2. `interaction.depth` (Max Tree Depth) - Tree complexity
+3. `shrinkage` (Shrinkage) - Learning rate
+4. `n.minobsinnode` (Min. Terminal Node Size) - Smallest allowable leaf
+
+Unlike with the random forest model, which only needs to adjust `mtry`, boosted tree models are much more involved when it comes to tuning. Our parameter grid below contains $3^4 = 81$ total parameter combinations. To help speed up computation, the `allowParallel` argument in the `trainControl` function is set to `TRUE`.
+
+```{r, echo=FALSE}
+# Make the outcome variable a factor for caret package
+train.data$allNBA <- as.factor(train.data$allNBA)
+test.data$allNBA <- as.factor(test.data$allNBA)
+
+# Rename levels for train()
+levels(train.data$allNBA) <- c("allNBA", "not") 
+```
+
+
+```{r gb tuning, cache=TRUE, message=FALSE}
+# Parameter grid
+gbmGrid <-  expand.grid(interaction.depth = c(1, 3, 5),
+                        n.trees = c(2500, 5000, 10000), 
+                        shrinkage = c(0.01, 0.05, 0.1),
+                        n.minobsinnode = c(5, 10, 15))
+
+# Control settings
+gbmControl <- trainControl(method = "cv", 
+                           number = 10,
+                           search = "grid",
+                           classProbs = TRUE,
+                           allowParallel = TRUE,
+                           summaryFunction = twoClassSummary)
+
+# Build models
+set.seed(42)
+gb.opt <-  train(allNBA ~ ., data = train.data,
+                  method = "gbm",
+                  metric = "ROC",
+                  tuneGrid = gbmGrid,
+                  trControl = gbmControl)
+```
+
+```{r}
+print(gb.opt)
+```
+
+The `train` function specifies the final values used for the optimal model are `n.trees = 2500`, `interaction.depth = 5`, `shrinkage = 0.01` and `n.minobsinnode = 15`, so let's rebuild a boosted tree model with those parameters.
+
+```{r, echo=FALSE}
+# Reload train/test data for gbm function
+train.data <- players %>% 
+  filter(year < 2018) %>% 
+  select(-c(playerID, year, tmID, center, forward, guard))
+
+test.data <- players %>% 
+  filter(year == 2018) %>% 
+  select(-c(playerID, year, tmID, center, forward, guard))
+```
+
+```{r}
+# Build model
+set.seed(42)
+gb.tune <- gbm(
+  formula = allNBA ~ .,
+  distribution = "bernoulli",
+  data = train.data,
+  n.trees = 2500,
+  interaction.depth = 5,
+  shrinkage = 0.01,
+  n.minobsinnode = 15,
+  cv.folds = 10)
+
+# Variable importance plot for top 10 variables
+vip::vip(gb.tune)
+```
+
+```{r echo=FALSE}
+gb.tune.pred <- predict(gb.tune, test, n.trees = gbm.perf(gb.tune, plot.it = FALSE), type = "response") %>% as.vector
+
+gb.tune.results <- players %>%
+  filter(year == 2018) %>% 
+  mutate(probability = gb.tune.pred) %>% 
+  select(playerID, year, allNBA, probability, center, forward, guard)
+
+gb.tune.centers <- gb.tune.results %>% 
+  filter(center == 1) %>%
+  select(-c(center, forward, guard)) %>% 
+  arrange(desc(probability)) %>% 
+  head(10)
+
+gb.tune.forwards <- gb.tune.results %>% 
+  filter(forward == 1) %>%
+  select(-c(center, forward, guard)) %>% 
+  arrange(desc(probability)) %>% 
+  head(15)
+
+gb.tune.guards <- gb.tune.results %>% 
+  filter(guard == 1) %>%
+  select(-c(center, forward, guard)) %>% 
+  arrange(desc(probability)) %>% 
+  head(15)
+```
+
+### Metrics
+
+```{r echo=FALSE}
+# Actual labels
+p.gb.tune <- gb.tune.pred
+class.labels <- test.data %>% select(allNBA)
+
+fg <- p.gb.tune[class.labels == 1]
+bg <- p.gb.tune[class.labels == 0]
+
+# Create roc and pr curves
+roc.gb.tune <- roc.curve(scores.class0 = fg, scores.class1 = bg, curve = T)
+pr.gb.tune <- pr.curve(scores.class0 = fg, scores.class1 = bg, curve = T)
+
+# Create df for tpr/fpr values
+roc.gb.tune.df <- roc.gb.tune$curve[,1:2] %>% as.data.frame()
+colnames(roc.gb.tune.df) <- c("fpr", "tpr") # column names
+roc.gb.tune.df$model <- "gb.tune" # add model column
+
+auc.gb.tune <- ROCR::prediction(p.gb.tune, class.labels) %>% ROCR::performance("auc") %>% attr("y.values") %>% unlist
+auroc.gb.tune <- roc.gb.tune.df %>% ggplot(aes(x = fpr, y = tpr)) + 
+  geom_line(size = 1.2, color = "#F69B95") + 
+  labs(x = "False Positive Rate",
+       y = "True Positive Rate",
+       title = paste("Tuned Boosted Tree ROC Curve \n AUC = ", auc.gb.tune))
+
+# Create df for prec/rec values
+pr.gb.tune.df <- pr.gb.tune$curve[,1:2] %>% as.data.frame()
+colnames(pr.gb.tune.df) <- c("Recall", "Precision") # column names
+pr.gb.tune.df$model <- "gb.tune" # add model column
+
+auprc.gb.tune <- pr.gb.tune.df %>% ggplot(aes(x = Recall, y = Precision)) +
+  geom_line(size = 1.2, color = "#F69B95") +
+  labs(title = paste("Tuned Boosted Tree Precision-Recall Curve \n AUC = ", pr.gb.tune$auc.integral))
+
+# Mean Cross-Entropy (cost function)
+mxe.gb.tune <- ROCR::prediction(p.gb.tune, class.labels) %>% ROCR::performance("mxe") %>% attr("y.values") %>% unlist
+```
+
+```{r}
+# Plots
+gridExtra::grid.arrange(auroc.gb.tune, auprc.gb.tune, ncol=2)
+
+# AUROC
+auc.gb.tune
+
+# AUPRC
+pr.gb.tune$auc.integral
+
+# Cross-Entropy
+mxe.gb.tune
+```
+
+### Predictions {.tabset}
+
+#### Guards
+
+```{r, echo=FALSE}
+gb.tune.guards
+```
+
+#### Forwards
+
+```{r, echo=FALSE}
+gb.tune.forwards
+```
+
+#### Centers
+
+```{r, echo=FALSE}
+gb.tune.centers
+```
+
+### Summary
+
+The tuned boosted tree model provides a very slight improvement over the untuned model. As with the random forest models, it correctly predicts **13 out of 15** players, with the order of players slightly different.
+
+## Model Comparison
+
+We can now compare our evaluation metrics for our tree ensembles and our previous regularized regression models. 
+
+```{r, echo=FALSE}
+# Load metrics from logistic regression models
+metric.comp <- read.csv("metric_comp.csv")
+
+# Compile each metric
+auroc.metrics <- c(auc.rf.tune,
+                   auc.gb.tune)
+
+auprc.metrics <- c(pr.rf.tune$auc.integral,
+                   pr.gb.tune$auc.integral)
+
+mxe.metrics <- c(mxe.rf.tune,
+                 mxe.gb.tune)
+
+model.names <- c("Random Forest", "Boosted Tree")
+
+# Add to comparison table
+metric.comp.new <- data.frame(Model = model.names,
+                          AUROC = auroc.metrics,
+                          AUPRC = auprc.metrics,
+                          Entropy = mxe.metrics)
+
+metric.comp <- rbind(metric.comp, metric.comp.new)
+
+metric.comp %>% 
+  mutate(
+    AUROC = cell_spec(AUROC, "html", 
+                      background = case_when(
+                        AUROC == max(AUROC) ~ "#00BA38",
+                        AUROC == min(AUROC) ~ "#F80040",
+                        TRUE ~ "#FFFFFF")),
+    
+    AUPRC = cell_spec(AUPRC, "html", 
+                      background = case_when(
+                        AUPRC == max(AUPRC) ~ "#00BA38",
+                        AUPRC == min(AUPRC) ~ "#F80040",
+                        TRUE ~ "#FFFFFF")),
+    
+    Entropy = cell_spec(Entropy, "html", 
+                        background = case_when(
+                          Entropy == min(Entropy) ~ "#00BA38",
+                          Entropy == max(Entropy) ~ "#F80040",
+                          TRUE ~ "#FFFFFF"))
+  ) %>% 
+  kable(format = "html", escape = F) %>% 
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"))
+```
+
+The random forest model performed the best based on all evaluation criteria, so let's use that to predict the 2019 All-NBA team!
+
+## 2019 All-NBA Team Predictions
+
+```{r 2019 predictions}
+# Read in 2018-2019 regular season data and save as matrix
+players.2019 <- players %>% 
+  filter(year == 2019) %>% 
+  select(-c(playerID, year, tmID, center, forward, guard, allNBA))
+
+# Make predictions
+set.seed(42)
+rf.tune.pred.2019 <- predict(rf.tune, players.2019, type = "prob")
+```
+
+```{r, echo=FALSE}
+# Combine results column with original data
+results.rf.2019 <- players %>% 
+  filter(year == 2019) %>% 
+  mutate(probability = as.vector(rf.tune.pred.2019[,2])) %>% 
+  select(playerID, probability, center, forward, guard)
+
+# Predictions for 2019
+rf.guard.predictions.2019 <- results.rf.2019 %>% 
+  filter(guard == 1) %>%
+  select(-c(center, forward, guard)) %>% 
+  arrange(desc(probability)) %>% 
+  head(15)
+
+rf.forward.predictions.2019 <- results.rf.2019 %>% 
+  filter(forward == 1) %>%
+  select(-c(center, forward, guard)) %>% 
+  arrange(desc(probability)) %>% 
+  head(15)
+
+rf.center.predictions.2019 <- results.rf.2019 %>% 
+  filter(center == 1) %>%
+  select(-c(center, forward, guard)) %>% 
+  arrange(desc(probability)) %>% 
+  head(15)
+```
+
+### Probability Rankings {.tabset}
+
+#### Guard Predictions
+
+```{r, echo=FALSE}
+rf.guard.predictions.2019
+```
+
+#### Forward Predictions
+
+```{r, echo=FALSE}
+rf.forward.predictions.2019
+```
+
+#### Center Predictions
+
+```{r, echo=FALSE}
+rf.center.predictions.2019
+```
+
+### Predicted Roster
+
+```{r, echo=FALSE}
+allnba.guard.2019 <- rf.guard.predictions.2019 %>% as.data.frame %>% .[1:6,1] %>% matrix(nrow = 2, byrow = FALSE)
+allnba.forward.2019 <- rf.forward.predictions.2019 %>% as.data.frame %>% .[1:6,1] %>% matrix(nrow = 2, byrow = FALSE)
+allnba.center.2019 <- rf.center.predictions.2019 %>% as.data.frame %>% .[1:3,1] %>% matrix(nrow = 1, byrow = FALSE)
+
+allnba <- data.frame(rbind(allnba.guard.2019, allnba.forward.2019, allnba.center.2019))
+names(allnba) <- c("First Team", "Second Team", "Third Team")
+row.names(allnba) <- c("Guard ", "Guard", "Forward ", "Forward", "Center")
+
+allnba %>% 
+  kable %>% 
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"))
+```
+
+## Conclusion
+
+The random forest model provides a very different roster than what our regularized regression models came up with. There are admittedly some questionable choices in there; however, this only highlights the fact that the results of the model's predictions should be used only as a guide. There are still plenty of improvements that can be made, including but not limited to:
+
+1. Resampling to account for class imbalance
+2. Data preprocessing (centering, scaling)
+3. Further tuning
+
+Regardless, it'll be interesting to see how each predicted roster compares with the actual roster. As of today (May 15th, 2019), we'll just have to keep waiting!
