@@ -11,8 +11,9 @@ Detailed reports for each stage of this project can be found on RPubs:
 
 1. [Data Cleaning](http://rpubs.com/martij222/all-nba-data-wrangling) 
 2. [Exploratory Data Analysis](http://rpubs.com/martij222/all-nba-eda)
-3. [Model Building](http://rpubs.com/martij222/all-nba-ml)
-4. [Web Scraping](http://rpubs.com/martij222/web-scraping)
+3. [Regularized Regression Models](http://rpubs.com/martij222/all-nba-ml)
+4. [Tree Ensembles](http://rpubs.com/martij222/all-nba-dt) (Uploaded May 15)
+5. [Web Scraping](http://rpubs.com/martij222/web-scraping)
 
 ## Overview
 
@@ -37,11 +38,11 @@ Additional data is scraped from [Basketball-Reference](https://www.basketball-re
 ![Model Metrics Comparison Table](https://github.com/martij222/capstone-project/blob/master/graphs/model-comp-table.png)
 
 
-Of the 3 regularized logistic regression models created, elastic-net provided the winning model.
+Of the 3 regularized logistic regression models created, **elastic-net provided the winning model**.
 
 ### 2019 All-NBA Team Predictions
 
-The winning model predicts the following roster for the 2019 All-NBA Team:
+The elastic-net model predicts the following roster for the 2019 All-NBA Team:
 
 | Position      | First Team            | Second Team      | Third Team         |
 |---------------|:---------------------:|:----------------:|:------------------:|
@@ -51,4 +52,4 @@ The winning model predicts the following roster for the 2019 All-NBA Team:
 | Forward       |	LeBron James          | Kevin Durant     | Blake Griffin      |
 | Center        |	Anthony Davis         | Joel Embiid      | Karl-Anthony Towns |
 
-As of April 30, 2019, the actual teams have not yet been announced.
+As of May 15, 2019, the actual teams have not yet been announced.
