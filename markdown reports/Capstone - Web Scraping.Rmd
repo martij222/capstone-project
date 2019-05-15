@@ -1,0 +1,375 @@
+---
+title: "Web Scraping"
+author: "James Martinez"
+date: "April 14, 2019 (Updated May 15)"
+output:
+  html_document:
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(rvest)
+library(tidyverse)
+```
+
+## Introduction
+
+This report covers the web scraping of [Basketball-Reference](https://www.basketball-reference.com/) for 2018-2019 regular season player data, as well as the modification for easy use with the [current logistic regression model](http://rpubs.com/martij222/all-nba-ml) using the `rvest` and `tidyverse` packages.
+
+## Web Scraping
+
+2018-2019 player stats can be found [here](https://www.basketball-reference.com/leagues/NBA_2019_totals.html). `read_html` outputs an XML document from which we can extract the stats we're interested in.
+
+```{r player data}
+# Get appropriate webpage
+url <- "https://www.basketball-reference.com/leagues/NBA_2019_totals.html"
+webpage <- read_html(url)
+
+# Get headers
+headers <- webpage %>% 
+  html_nodes("table#totals_stats > thead > tr > th") %>% 
+  html_text %>% .[-1] # Omit "Rk" column
+
+# Save stats into matrix
+data <- webpage %>% 
+  html_nodes("table#totals_stats > tbody > tr > td") %>% 
+  html_text %>% 
+  matrix(ncol = length(headers), byrow = TRUE)
+
+# Save as a data frame and add column titles
+data <- as.data.frame(data, stringsAsFactors = FALSE)
+names(data) <- headers
+
+# Check data
+data
+```
+
+In order to prevent problems when implementing our model on this new data, we'll take all the columns that were present in the original data, rename them, and select them in the same order they were listed. We'll then transform them in the same way.
+
+```{r}
+# Save as correct data types and select variables to match Kaggle data
+players.2019 <- data %>% mutate_at(vars(G:PTS), as.numeric) %>% select(c(Player, Tm, G, MP, PTS, ORB, DRB, TRB, AST, STL, BLK, TOV, PF, FGA, FG, FTA, FT, "3PA", "3P", Pos))
+
+# Match column names to Kaggle data set
+names(players.2019) <- c("playerID", "tmID", "GP", "minutes", "points", "oRebounds", "dRebounds", "rebounds", "assists", "steals", 
+                         "blocks", "turnovers", "PF", "fgAttempted", "fgMade", "ftAttempted", "ftMade", "threeAttempted", "threeMade", "pos")
+
+# Add position indicators
+players.2019 <- players.2019 %>% 
+  mutate(
+    center = case_when(
+      grepl("C", pos) ~ as.integer(1),
+      TRUE ~ as.integer(0)),
+    
+    forward = case_when(
+      grepl("F", pos) ~ as.integer(1),
+      TRUE ~ as.integer(0)),
+    
+    guard = case_when(
+      grepl("G", pos) ~ as.integer(1),
+      TRUE ~ as.integer(0))) %>% 
+  select(-pos)
+
+players.2019
+```
+
+Before we add the extra features, we first need to add the `allstar` indicator.
+
+```{r allstar}
+# All-Star 2019 webpage
+url <- "https://www.basketball-reference.com/allstar/NBA_2019.html"
+
+# Extract names
+allstar <- url %>%
+  read_html %>% 
+  html_nodes("table > tbody > tr > th > a") %>% 
+  html_text
+
+# Add allstar column
+players.2019 <- players.2019 %>% 
+  mutate(allstar = case_when(
+    playerID %in% allstar ~ as.integer(1),
+    TRUE ~ as.integer(0)
+  ))
+```
+
+Now we can add all the new features.
+
+```{r feature eng}
+# Add per game stats
+players.2019 <- players.2019 %>% 
+  mutate(
+    minutesPerGame = minutes / GP,
+    pointsPerGame = points / GP,
+    assistsPerGame = assists / GP,
+    oReboundsPerGame = oRebounds / GP,
+    dReboundsPerGame = dRebounds / GP,
+    reboundsPerGame = rebounds / GP,
+    stealsPerGame = steals / GP,
+    blocksPerGame = blocks / GP,
+    turnoversPerGame = turnovers / GP,
+    fgAttemptedPerGame = fgAttempted / GP,
+    fgMadePerGame = fgMade/ GP,
+    ftAttemptedPerGame = ftAttempted / GP,
+    ftMadePerGame = ftMade / GP,
+    threeAttemptedPerGame = threeAttempted / GP,
+    threeMadePerGame = threeMade / GP)
+
+# GP Ratio, health, and stats compared to league 
+players.2019 <- players.2019 %>% 
+  mutate(
+    GPRatio = GP / max(GP), 
+    healthy = case_when(
+      GPRatio >= 0.7 ~ as.integer(1),
+      TRUE ~ as.integer(0)),
+    lgPoints = points / sum(points),
+    lgAssists = assists / sum(assists),
+    lgRebounds = rebounds / sum(rebounds),
+    lgDRebounds = case_when(
+      dRebounds != 0 ~ dRebounds / sum(dRebounds),
+      TRUE ~ 0),
+    lgORebounds = case_when(
+      oRebounds != 0 ~ oRebounds / sum(oRebounds),
+      TRUE ~ 0))
+
+# Stats compared to team
+# Add some stats to compare by team
+players.2019 <- players.2019 %>% 
+  group_by(tmID) %>% 
+  mutate(
+    tmPoints = points / sum(points),
+    tmAssists = assists / sum(assists),
+    tmRebounds = rebounds / sum(rebounds),
+    tmDRebounds = case_when(
+      dRebounds != 0 ~ dRebounds / sum(dRebounds),
+      TRUE ~ 0),
+    tmORebounds = case_when(
+      oRebounds != 0 ~ oRebounds / sum(oRebounds),
+      TRUE ~ 0)) %>% 
+  ungroup()
+
+# More individual stats
+players.2019 <- players.2019 %>% 
+  mutate(
+    ftPct = ftMade / ftAttempted,
+    fgPct = fgMade / fgAttempted,
+    threePct = case_when(
+      threeAttempted != 0 ~ threeMade / threeAttempted,
+      TRUE ~ 0),
+    efgPct = (fgMade + 0.5 * threeMade) / fgAttempted,
+    astTovRatio = case_when( 
+      turnovers != 0 ~ assists / turnovers,
+      TRUE ~ 0), 
+    dReboundPct = dRebounds / rebounds,
+    oReboundPct = oRebounds / rebounds,
+    totalGameScore = points + 0.4 * (fgMade + threeMade) - 0.7 * fgAttempted - 0.4 * (ftAttempted - ftMade) + 0.7 * oRebounds + 0.3 * dRebounds + steals + 0.7 * assists + 0.7 * blocks - 0.4 * PF - turnovers,
+    avgGameScore = totalGameScore / GP)
+
+players.2019
+```
+
+## Complete Player Data
+
+The following code basically follows the previous process, but loops through the web pages for the 2013 through 2019 regular seasons in order to compile a complete data set.
+
+```{r}
+# all-nba data frame ------------------------------------------------------
+
+allnba.url <- "https://en.wikipedia.org/wiki/All-NBA_Team"
+webpage <- read_html(allnba.url) 
+
+allnba <- webpage %>% 
+  html_nodes(xpath = '//*[@id="mw-content-text"]/div/table[5]') %>% 
+  html_table(fill = T)
+
+# Extract only players from the relevant seasons
+allnba <- allnba[[1]][,-c(3,5,7)] %>% 
+  tail(30)
+
+# Label the season consistently and rename column to 'year'
+allnba$Season <- rep(2013:2018, each = 5)
+
+# Gather data on team/player to create yearly list
+allnba <- allnba %>% gather(Team, Player, -Season)
+
+# nba data ----------------------------------------------------------------
+
+years <- 2013:2019
+players.2019 <- data.frame() # Instantiate data frame
+
+for(year in years){
+  # Store appropriate url in xml object
+  url <- paste0("https://www.basketball-reference.com/leagues/NBA_", year, "_totals.html")
+  webpage <- read_html(url)
+  
+  # Get headers
+  headers <- webpage %>% 
+    html_nodes("table#totals_stats > thead > tr > th") %>%
+    html_text %>% 
+    .[-1] # Omit the "Rank" column
+  
+  # Store data
+  data <- webpage %>%
+    html_nodes("table#totals_stats > tbody > tr > td") %>% 
+    html_text %>% 
+    matrix(ncol = length(headers), byrow = TRUE) %>%
+    as.data.frame
+  
+  # Add headers and year
+  names(data) <- headers
+  data$year <- year
+  
+  # Correct data types and grab columns in the same order as the Kaggle data
+  data <- data %>% 
+    mutate_at(vars(G:PTS), as.character) %>% # convert to character before numeric (factor data type will cause issues going straight to numeric)
+    mutate_at(vars(G:PTS), as.numeric) %>% 
+    select(c(Player, year, Tm, G, MP, PTS, ORB, DRB, TRB, AST, STL, BLK, TOV, PF, FGA, FG, FTA, FT, "3PA", "3P", Pos))
+  
+  # Match column names to Kaggle data set
+  names(data) <- c("playerID", "year", "tmID", "GP", "minutes", "points", "oRebounds", "dRebounds", "rebounds", "assists", "steals", 
+                           "blocks", "turnovers", "PF", "fgAttempted", "fgMade", "ftAttempted", "ftMade", "threeAttempted", "threeMade", "pos")
+  
+  # Add position indicators
+  data <- data %>% 
+    mutate(
+      center = case_when(
+        grepl("C", pos) ~ as.integer(1),
+        TRUE ~ as.integer(0)),
+      
+      forward = case_when(
+        grepl("F", pos) ~ as.integer(1),
+        TRUE ~ as.integer(0)),
+      
+      guard = case_when(
+        grepl("G", pos) ~ as.integer(1),
+        TRUE ~ as.integer(0))) %>% 
+    select(-pos)
+  
+  # All-NBA Indicator
+  if(year != 2019){
+    
+    # Get list to check against from main list at top
+    allnba.check <- allnba %>% 
+      filter(Season == year) %>% 
+      .$Player %>% 
+      gsub("(\\^)|\\s\\([0-9]+\\)$", "", .) # Remove extra characters from names
+    
+    data <- data %>%
+      mutate(allNBA = case_when(
+        playerID %in% allnba.check ~ as.integer(1),
+        TRUE ~ as.integer(0)))
+    
+  } else {
+    data$allNBA <- 0 
+  }
+  
+  # All-Star Webpage
+  allstar.url <- paste0("https://www.basketball-reference.com/allstar/NBA_", year, ".html")
+  
+  # Get All-Star roster
+  allstar <- allstar.url %>% 
+    read_html %>% 
+    html_nodes("table > tbody > tr > th > a") %>% 
+    html_text
+  
+  # Add allstar column
+  data <- data %>% 
+    mutate(allstar = case_when(
+      playerID %in% allstar ~ as.integer(1),
+      TRUE ~ as.integer(0)))
+  
+  # Create variables for per-game statistics
+  data <- data %>% 
+    mutate(
+      minutesPerGame = minutes / GP,
+      pointsPerGame = points / GP,
+      assistsPerGame = assists / GP,
+      oReboundsPerGame = oRebounds / GP,
+      dReboundsPerGame = dRebounds / GP,
+      reboundsPerGame = rebounds / GP,
+      stealsPerGame = steals / GP,
+      blocksPerGame = blocks / GP,
+      turnoversPerGame = turnovers / GP,
+      fgAttemptedPerGame = fgAttempted / GP,
+      fgMadePerGame = fgMade/ GP,
+      ftAttemptedPerGame = ftAttempted / GP,
+      ftMadePerGame = ftMade / GP,
+      threeAttemptedPerGame = threeAttempted / GP,
+      threeMadePerGame = threeMade / GP)
+  
+  # GP Ratio, health, and stats compared to league 
+  data <- data %>%
+    mutate(
+      GPRatio = GP / max(GP), 
+      healthy = case_when(
+        GPRatio >= 0.7 ~ as.integer(1),
+        TRUE ~ as.integer(0)),
+      lgPoints = points / sum(points),
+      lgAssists = assists / sum(assists),
+      lgRebounds = rebounds / sum(rebounds),
+      lgDRebounds = case_when(
+        dRebounds != 0 ~ dRebounds / sum(dRebounds),
+        TRUE ~ 0),
+      lgORebounds = case_when(
+        oRebounds != 0 ~ oRebounds / sum(oRebounds),
+        TRUE ~ 0))
+  
+  # Add some stats to compare by team
+  data <- data %>% 
+    group_by(tmID) %>% 
+    mutate(
+      tmPoints = points / sum(points),
+      tmAssists = assists / sum(assists),
+      tmRebounds = rebounds / sum(rebounds),
+      tmDRebounds = case_when(
+        dRebounds != 0 ~ dRebounds / sum(dRebounds),
+        TRUE ~ 0),
+      tmORebounds = case_when(
+        oRebounds != 0 ~ oRebounds / sum(oRebounds),
+        TRUE ~ 0)) %>% 
+    ungroup()
+  
+  # More individual stats
+  data <- data %>% 
+    mutate(
+      ftPct = case_when(
+        ftAttempted != 0 ~ ftMade / ftAttempted,
+        TRUE ~ 0),
+      fgPct = case_when(
+        fgAttempted != 0 ~ fgMade / fgAttempted,
+        TRUE ~ 0),
+      threePct = case_when(
+        threeAttempted != 0 ~ threeMade / threeAttempted,
+        TRUE ~ 0),
+      efgPct = case_when(
+        fgAttempted != 0 ~ (fgMade + 0.5 * threeMade) / fgAttempted,
+        TRUE ~ 0),
+      astTovRatio = case_when( 
+        turnovers != 0 ~ assists / turnovers,
+        TRUE ~ 0), 
+      dReboundPct = case_when(
+        rebounds != 0 ~ dRebounds / rebounds,
+        TRUE ~ 0),
+      oReboundPct = case_when(
+        rebounds != 0 ~ oRebounds / rebounds,
+        TRUE ~ 0),
+      totalGameScore = points + 0.4 * (fgMade + threeMade) - 0.7 * fgAttempted - 0.4 * (ftAttempted - ftMade) + 0.7 * oRebounds + 0.3 * dRebounds + steals + 0.7 * assists + 0.7 * blocks - 0.4 * PF - turnovers,
+      avgGameScore = case_when(
+        GP != 0 ~ totalGameScore / GP,
+        TRUE ~ 0))
+  
+  # Add to players df
+  players.2019 <- rbind(players.2019, data)
+}
+
+write.csv(players.2019, "players_2019.csv", row.names = FALSE)
+
+```
+
+Now all we have to do is save the new data so we can use it with our model!
+
+```{r save data}
+write.csv(players.2019, "players_2019.csv", row.names = FALSE)
+```
+
