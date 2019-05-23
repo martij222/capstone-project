@@ -44,12 +44,18 @@ Of the 3 regularized logistic regression models created, **elastic-net provided 
 
 The elastic-net model predicts the following roster for the 2019 All-NBA Team:
 
-| Position      | First Team            | Second Team      | Third Team         |
-|---------------|:---------------------:|:----------------:|:------------------:|
-| Guard         | James Harden          | Stephen Curry    | Kemba Walker       |
-| Guard         | Russell Westbrook     | Damian Lillard   | Kyrie Irving       |
-| Forward       | Giannis Antetokounmpo | Paul George      | Kawhi Leonard      |
-| Forward       |	LeBron James          | Kevin Durant     | Blake Griffin      |
-| Center        |	Anthony Davis         | Joel Embiid      | Karl-Anthony Towns |
+| Position      | First Team                        | Second Team                | Third Team                   |
+|---------------|:---------------------------------:|:--------------------------:|:----------------------------:|
+| Guard         | **James Harden**                  | *Stephen Curry (1st)*      | **Kemba Walker**             |
+| Guard         | *Russell Westbrook (3rd)*         | **Damian Lillard**         | *Kyrie Irving (2nd)*         |
+| Forward       | **Giannis Antetokounmpo**         | *Paul George (1st)*        | *Kawhi Leonard (2nd)*        |
+| Forward       |	*LeBron James (3rd)*              | **Kevin Durant**           | **Blake Griffin**            |
+| Center        |	~~Anthony Davis~~                 | **Joel Embiid**            | ~~Karl-Anthony Towns~~       |
 
-As of May 15, 2019, the actual teams have not yet been announced.
+The All-NBA Teams were announced on May 23, 2019. In the table above, players in **bold** are predicted on the correct team, players in *italics* made a different team (with the correct team in parentheses), and players that are ~~struck-through~~ did not make the team.
+
+It looks like the elastic-net model **correctly predicted 13 of 15 players!** The only two incorrect predictions are in the center position, which was closely contested according to the model - the top 5 players were all within ~0.03 probability. Anthony Davis not making a roster is a bit of a surprise, especially considering he was ranked first in probability for centers. Nikola Jokić, the actual First Team center, was ranked 5th by our model with a 0.960 probability. Rudy Gobert, who made the Third Team, was ranked just behind Jokić with a probability of 0.779.
+
+For many players (as well as Front-Office folks), these results could have a [big impact](https://ftw.usatoday.com/2019/05/all-nba-team-2019-supermax-kemba-lillard-lebron) on the league due to recent CBA and salary cap rules. For instance, Kemba Walker is now eligible for a Super Max $221M contract. Giannis Antetokounmpo and Damian Lillard are also eligible for huge contract extensions. 
+
+There are many factors that our model didn't tap into. However, assuming that the results and predictions were used correctly (i.e., as a *guide* rather than a definitive list), we can see that it still would have provided a very strong foundation on which to make your own predictions. Regardless, the unaltered predictions were pretty good!
